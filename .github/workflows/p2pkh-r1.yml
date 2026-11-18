@@ -1,9 +1,7 @@
 name: P2PKH-R1 conformance
+# Development tests run in a cloud Linux environment or Apple Container.
+# Keep Actions manual to avoid duplicate push/PR runs.
 on:
-  push:
-    paths: ['projects/p2pkh-r1/**', 'shared/**', '.github/workflows/p2pkh-r1.yml']
-  pull_request:
-    paths: ['projects/p2pkh-r1/**', 'shared/**', '.github/workflows/p2pkh-r1.yml']
   workflow_dispatch:
 
 permissions:

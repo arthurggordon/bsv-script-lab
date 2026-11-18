@@ -17,7 +17,7 @@ A BSV payment template for the hash of an uncompressed curveSM2 public key. The 
 | Witness | preimage, public key, raw `r || s` |
 | Current API | Python reference; external device/message-sign callback |
 
-**Status:** experimental v1. Local standard-vector, OpenSSL signing and adversarial generator tests are provided. The CI workflow runs complete inputs through BSV Node 1.2.3 and pinned chain-gang. Check its result before claiming node interoperability. Hardware signing and miner relay/fee measurement are separate release gates. This project does not claim national cryptographic product certification.
+**Status:** experimental v1. Local standard-vector, OpenSSL signing and adversarial generator tests are provided. The manual validation workflow runs complete inputs through BSV Node 1.2.3 and pinned chain-gang. Check its result before claiming node interoperability. Hardware signing and miner relay/fee measurement are separate release gates. This project does not claim national cryptographic product certification.
 
 [中文规范](docs/spec.zh-CN.md) · [English specification](docs/spec.en.md) · [Reference and tests](reference/README.md) · [Layout](template/layout.json) · [Standard vector](template/sm2-standard.json) · [Payment vector](template/spend-all.json)
 

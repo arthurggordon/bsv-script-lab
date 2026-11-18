@@ -1,10 +1,9 @@
 name: P2PKH-SM2 conformance
+# Development tests run in a cloud Linux environment or Apple Container.
+# Keep Actions manual to avoid duplicate push/PR runs.
 on:
-  push:
-    paths: ['projects/p2pkh-sm2/**', 'shared/**', '.github/workflows/p2pkh-sm2.yml']
-  pull_request:
-    paths: ['projects/p2pkh-sm2/**', 'shared/**', '.github/workflows/p2pkh-sm2.yml']
   workflow_dispatch:
+
 permissions:
   contents: read
 jobs:

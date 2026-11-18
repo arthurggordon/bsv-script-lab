@@ -23,7 +23,7 @@ P2PKH-SM2 是第二个项目：付款方只需收款方公钥哈希即可创建�
 | `projects/<name>/template/` | 布局指纹和可复现向量；大脚本可由生成器导出 |
 | `projects/<name>/sdk/` | 已实现的语言 SDK；R1 提供 TypeScript / Rust / Go |
 | [shared/](shared/README.md) | 通用编码、开发测试工具和节点验证启动器 |
-| `.github/workflows/<name>.yml` | 按项目触发的验证流水线 |
+| `.github/workflows/<name>.yml` | 按项目独立、手动触发的验证流水线 |
 
 The former top-level `docs/`, `reference/`, `sdk/` and `template/` directories belong to R1 and now live under `projects/p2pkh-r1/`. R1 script bytes and payment vectors are unchanged. Go imports now use `github.com/linzhm/bsv-script-lab/projects/p2pkh-r1/sdk/go`.
 
@@ -38,3 +38,7 @@ python3 -m unittest discover -s projects/p2pkh-sm2/reference -p test_sm2.py -v
 ```
 
 OpenSSL with SM2/SM3 support is required for the interoperability test. Follow each project's reference guide for complete-input BSV Node and chain-gang verification.
+
+Development validation should run in a cloud Linux environment or Apple Container. Docker is not used. GitHub Actions workflows are manual (`workflow_dispatch`) to avoid consuming quota on every push and PR.
+
+开发验证优先使用云端 Linux 环境或 Apple Container，不使用 Docker。GitHub Actions 仅保留手动入口，避免每次 push 和 PR 重复计费。
