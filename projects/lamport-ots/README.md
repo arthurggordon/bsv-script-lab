@@ -1,4 +1,4 @@
-# Project 03 · Lamport OTS (SHA-256)
+# Lamport OTS (SHA-256)
 
 Experimental, directly unrolled 256-bit Lamport one-time signatures in BSV Script.
 Includes secure random key generation, digest signing/verification, an in-memory
@@ -47,13 +47,13 @@ From repository root:
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install -r projects/03-lamport-ots/reference/requirements.txt
-python -m unittest discover -s projects/03-lamport-ots/reference -p test_lamport.py -v
-python projects/03-lamport-ots/reference/measure.py --benchmark
+python -m pip install -r projects/lamport-ots/reference/requirements.txt
+python -m unittest discover -s projects/lamport-ots/reference -p test_lamport.py -v
+python projects/lamport-ots/reference/measure.py --benchmark
 # macOS, Apple Container (no Docker daemon):
-bash projects/03-lamport-ots/reference/verify_apple.sh
+bash projects/lamport-ots/reference/verify_apple.sh
 # Linux / CI, isolated downloaded BSV Node 1.2.3:
-bash projects/03-lamport-ots/reference/verify.sh
+bash projects/lamport-ots/reference/verify.sh
 ```
 
 [Validation receipt](docs/validation.md) · [Protocol and layout](docs/spec.md) · [Reference usage](reference/README.md) ·

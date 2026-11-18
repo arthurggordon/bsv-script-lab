@@ -21,7 +21,7 @@
 |---|---|---|
 | [P2PKH-R1](projects/p2pkh-r1/README.md) | 以 P-256 公钥哈希收款，普通付款由设备签名一次 | [协议规范](projects/p2pkh-r1/docs/spec.zh-CN.md) · [TypeScript、Rust 和 Go 接入](projects/p2pkh-r1/docs/sdk.zh-CN.md) |
 | [P2PKH-SM2](projects/p2pkh-sm2/README.md) | 用 Bitcoin Script 执行 SM2 验签，并计算 SM3 与 ZA | [协议规范](projects/p2pkh-sm2/docs/spec.zh-CN.md) · [Python 参考实现](projects/p2pkh-sm2/reference/README.md) |
-| [Lamport OTS](projects/03-lamport-ots/README.md) | 基于 SHA-256 的一次性授权。每组密钥对应一个 UTXO，只签一次。 | [安全分析](projects/03-lamport-ots/docs/security.md) · [验证记录](projects/03-lamport-ots/docs/validation.md) |
+| [Lamport OTS](projects/lamport-ots/README.md) | 基于 SHA-256 的一次性授权。每组密钥对应一个 UTXO，只签一次。 | [安全分析](projects/lamport-ots/docs/security.md) · [验证记录](projects/lamport-ots/docs/validation.md) |
 
 <details>
 <summary><strong>对照脚本尺寸</strong></summary>
@@ -32,7 +32,7 @@
 |---|---:|---:|
 | [P2PKH-R1](projects/p2pkh-r1/template/layout.json) | 59,582 字节 | 326 字节 |
 | [P2PKH-SM2 v2](projects/p2pkh-sm2/template/layout.json) | 199,777 字节 | 291 字节 |
-| [Lamport OTS](projects/03-lamport-ots/template/measurement.json) | 22,780 字节 | 8,357 字节 |
+| [Lamport OTS](projects/lamport-ots/template/measurement.json) | 22,780 字节 | 8,357 字节 |
 
 Lamport 的锁定脚本包含公钥。普通 OTDA 路径的解锁脚本随参与签名的交易数据变化。
 
@@ -106,13 +106,13 @@ python3 -m unittest -v test_sm2
 激活 Python 环境后，在仓库根目录运行。
 
 ```sh
-python -m pip install -r projects/03-lamport-ots/reference/requirements.txt
-python -m unittest discover -s projects/03-lamport-ots/reference -p test_lamport.py -v
+python -m pip install -r projects/lamport-ots/reference/requirements.txt
+python -m unittest discover -s projects/lamport-ots/reference -p test_lamport.py -v
 ```
 
-Linux x86-64 用 `bash projects/03-lamport-ots/reference/verify.sh`，Apple Container 用 `bash projects/03-lamport-ots/reference/verify_apple.sh`。
+Linux x86-64 用 `bash projects/lamport-ots/reference/verify.sh`，Apple Container 用 `bash projects/lamport-ots/reference/verify_apple.sh`。
 
-[参考工具和实测数据](projects/03-lamport-ots/reference/README.md)
+[参考工具和实测数据](projects/lamport-ots/reference/README.md)
 
 </details>
 

@@ -39,14 +39,13 @@ stack observation, and opcode counts are in [measurement.json](../template/measu
 ## Reproduction
 
 Use the commands in the [project README](../README.md). For R1 regression together
-with the Lamport node tests, from this branch's repository root:
+with the Lamport node tests, install both projects’ dependencies in `.venv` and run from the repository root.
 
 ```sh
-PATH="$PWD/.venv/bin:$PATH" PYTHONPATH="$PWD/reference" LAMPORT_RPC_PORT=18443 \
-  bash projects/03-lamport-ots/reference/verify_apple.sh test_payment
+PATH="$PWD/.venv/bin:$PATH" PYTHONPATH="$PWD/projects/p2pkh-r1/reference" LAMPORT_RPC_PORT=18443 \
+  bash projects/lamport-ots/reference/verify_apple.sh test_payment
 ```
 
-The local SM2 checks used a separate existing workspace; they are historical
-regression evidence here, not a claim that this branch ships the SM2 project.
+The SM2 regression results above were recorded in a separate local workspace.
 The GitHub workflow is manual only. When dispatched, it repeats the Lamport
 checks with a Linux BSV Node release build and uploads benchmark output.
