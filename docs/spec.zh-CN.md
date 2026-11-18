@@ -72,3 +72,11 @@ amount || sequence || hashOutputs || locktime || typeLE32
 公钥必须是曲线上的有效点，签名标量均须位于 `[1,n)`。签名设备保护私钥和临时秘密数，解锁栈只含公开数据。钱包签名前核对完整前序输出、收款人、找零及手续费，返回交易前验证设备签名。签名服务可跨调用保存记录，发现同一公钥对不同摘要返回相同 r 时扣住签名。Python 参考钱包包含这项检查。NONE 授权允许更改输出；多输入协议如需保护收款人，应明确由哪个输入的签名约束输出。[参考钱包](../reference/wallet.py)
 
 收款和普通付款接口、调用方提供的数据及互操作用例见 [SDK 指南](./sdk.zh-CN.md)。引擎互操作验收使用 BSV Node 1.2.3 和指定的稳定 chain-gang 版本，对同一份交易执行[完整输入验证](../reference/test_payment.py)。两个无配对 OTDA SINGLE 用例也必须整笔重放。scriptCode 由最后一个**实际执行**的分隔符决定，误删 BIP143 后缀中的另一分隔符会改变摘要。发布前还需真实设备签名回放、独立密码学审查，以及目标矿工策略与费用实测。[Chronicle 规则适用性](./chronicle.md)
+
+## 致谢
+
+感谢 Wei Zhang 在 nChain 白皮书《PUSHTX and its Building Blocks》（WP1605）中说明如何用公开参数构造 secp256k1 签名，并借助原生 `OP_CHECKSIG` 把签名原像绑定到实际交易。P2PKH-R1 沿用了这项技术来验证交易上下文。[WP1605 文献条目](https://github.com/bsv-blockchain/BRCs/blob/master/scripts/0021.md#references) · [nChain 的 PUSHTX 实现](https://github.com/nchain-innovation/zkscript_package/blob/fc20fb743edbc5bc5aba9d16625d50d1f50a3ef4/src/zkscript/transaction_introspection/transaction_introspection.py)
+
+感谢 Xiaohui Liu 对 OP_PUSH_TX 在 Bitcoin Script 中的应用所作的公开讲解，也感谢 BRC-21 的贡献者记录了如何在解锁栈中提供签名原像。[Xiaohui Liu 的技术演讲](https://www.wearedevelopers.com/videos/146-op_push_tx-and-its-applications-in-bitcoin-smart-contracts) · [BRC-21](https://github.com/bsv-blockchain/BRCs/blob/master/scripts/0021.md)
+
+感谢 BSV Node 和 chain-gang 的维护者。两套实现使我们能够对同一笔交易独立执行完整输入验证，并比较 Chronicle 分支的行为。[BSV Node](https://github.com/bitcoin-sv/bitcoin-sv) · [chain-gang](https://github.com/nchain-innovation/chain-gang)
