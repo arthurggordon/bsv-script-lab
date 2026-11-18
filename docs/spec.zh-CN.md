@@ -71,7 +71,7 @@ amount || sequence || hashOutputs || locktime || typeLE32
 
 公钥必须是曲线上的有效点，签名标量均须位于 `[1,n)`。签名设备保护私钥和临时秘密数，解锁栈只含公开数据。钱包签名前核对完整前序输出、收款人、找零及手续费，返回交易前验证设备签名。签名服务可跨调用保存记录，发现同一公钥对不同摘要返回相同 r 时扣住签名。Python 参考钱包包含这项检查。NONE 授权允许更改输出；多输入协议如需保护收款人，应明确由哪个输入的签名约束输出。[参考钱包](../reference/wallet.py)
 
-收款和普通付款接口、调用方提供的数据及互操作用例见 [SDK 指南](./sdk.zh-CN.md)。引擎互操作验收使用 BSV Node 1.2.3 和指定的稳定 chain-gang 版本，对同一份交易执行[完整输入验证](../reference/test_payment.py)。两个无配对 OTDA SINGLE 用例也必须整笔重放。scriptCode 由最后一个**实际执行**的分隔符决定，误删 BIP143 后缀中的另一分隔符会改变摘要。发布前还需真实设备签名回放、独立密码学审查，以及目标矿工策略与费用实测。[Chronicle 规则适用性](./chronicle.md)
+收款和普通付款接口、调用方提供的数据及互操作用例见 [SDK 指南](./sdk.zh-CN.md)。引擎互操作验收使用 BSV Node 1.2.3 和[chain-gang 的 OTDA 修复提交](https://github.com/linzhm/chain-gang/commit/5cb8c6e410dbfad1c619cec3ca54d1bcaacd4eb7)，对同一份交易执行[完整输入验证](../reference/test_payment.py)。两个无配对 OTDA SINGLE 用例也必须整笔重放。scriptCode 由最后一个**实际执行**的分隔符决定，误删 BIP143 后缀中的另一分隔符会改变摘要。发布前还需真实设备签名回放、独立密码学审查，以及目标矿工策略与费用实测。[Chronicle 规则适用性](./chronicle.md)
 
 ## 致谢
 

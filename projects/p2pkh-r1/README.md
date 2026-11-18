@@ -14,4 +14,4 @@ P2PKH-R1 允许付款人只凭 R1 公钥哈希创建输出。普通付款固定�
 
 The [binary layout and generation vectors](../../template/layout.json) define recognition. The [payment vector](../../template/spend-all.json) supplies a digest, fixed test signature, unlocking bytes and signed txid for offline replay. Source SDKs support output generation, owner recognition and ordinary single-input payments. The [reference wallet and assembly](../../reference/README.md) also cover mixed inputs and Chronicle OTDA.
 
-**Status** · Developer RFC, with no assigned BRC number. Hardware integration, stable-engine qualification and independent security review remain open.
+**Status** · Developer RFC, with no assigned BRC number. The [reference tests](../../reference/README.md) use the fork's pinned OTDA fix. Physical-device validation and independent security review remain open.
