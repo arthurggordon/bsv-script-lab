@@ -1,15 +1,15 @@
-# P2PKH-R1
+# BSV Script Lab
 
-A BSV payment script for a secp256r1 (P-256) public-key hash. The recipient signs the current input once. The unlocking script carries the signing preimage, public key, signature, verified inverse and a derived branch opcode. An ordinary ForkID ALL spend uses a 59,582-byte output script and a 326-byte unlocking script.
+BSV Script Lab is a public repository for exploring Bitcoin Script on BSV. We publish script designs alongside reference code and reproducible test vectors so developers can inspect the script bytes, replay spends and review the results.
 
-P2PKH-R1 允许付款人只凭 R1 公钥哈希创建输出。普通付款固定使用 ALL，签名器只签一次当前输入的摘要。解锁数据的大小与历史转付次数无关。
+BSV Script Lab 是我们公开研究 BSV 上 Bitcoin Script 的仓库。这里收录脚本设计、参考代码和可复现的测试向量，方便开发者核对脚本字节、重放交易并评审设计。
 
-| Developer resource | 中文 | English |
-|---|---|---|
-| Script template, wire format and signing rules | [协议规范](docs/spec.zh-CN.md) | [Specification](docs/spec.en.md) |
-| TypeScript, Rust and Go wallet integration | [SDK 接入](docs/sdk.zh-CN.md) | [SDK guide](docs/sdk.en.md) |
-| Consensus and policy considerations | [Chronicle 规则](docs/chronicle.md) | [Chronicle rules](docs/chronicle.md) |
+## Projects · 公开项目
 
-The [binary layout and generation vectors](template/layout.json) define recognition. The [payment vector](template/spend-all.json) supplies a digest, fixed test signature, unlocking bytes and signed txid for offline replay. Source SDKs support output generation, owner recognition and ordinary single-input payments. The [reference wallet and assembly](reference/README.md) also cover mixed inputs and Chronicle OTDA.
+### [P2PKH-R1](projects/p2pkh-r1/README.md)
 
-**Status** · Developer RFC, with no assigned BRC number. Hardware integration, stable-engine qualification and independent security review remain open. The repository is a payment-template research and interoperability project.
+Our first public script project is a payment template for P-256 (secp256r1) keys. A payer can create an output from the recipient’s public-key hash, and the recipient authorizes an ordinary spend with one device signature.
+
+P2PKH-R1 是本仓库首个公开的脚本项目。收款方提供 P-256 公钥哈希即可收款，普通花费只需设备签名一次。目前处于开发者 RFC 阶段，提供 TypeScript、Rust 和 Go SDK。
+
+[Project overview / 项目介绍](projects/p2pkh-r1/README.md) · [中文规范](docs/spec.zh-CN.md) · [English specification](docs/spec.en.md)
