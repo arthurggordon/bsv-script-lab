@@ -21,7 +21,7 @@ def check_node(tx, parents, index, valid=True, *, chronicle_active=True, old_out
             flags |= 1 << 21
     request=dict(tx=tx.serialize().hex(),n=index,flags=flags,reportflags=True,
                  txo=dict(lock=previous.script.hex(),value=previous.value,height=3 if chronicle_active and not old_output else 1))
-    response=requests.post('http://127.0.0.1:18443',auth=tuple(cookie),timeout=30,
+    response=requests.post(os.environ.get('REGTEST_URL', 'http://127.0.0.1:18443'),auth=tuple(cookie),timeout=30,
         json=dict(jsonrpc='1.0',id=1,method='verifyscript',params=[[request],False,5000]))
     response.raise_for_status(); data=response.json()
     if data.get('error'): raise AssertionError(data['error'])
