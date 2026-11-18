@@ -38,7 +38,7 @@ def check(tx,parents,index,valid=True):
     try:
         converted.validate([engine_tx(p) for p in parents])
         accepted=True
-    except RuntimeError: accepted=False
+    except ValueError: accepted=False
     if accepted!=valid: raise AssertionError(('chain-gang result',accepted,valid))
 
 

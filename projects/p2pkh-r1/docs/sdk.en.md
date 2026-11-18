@@ -34,9 +34,9 @@ For mixed inputs or explicit NONE, SINGLE, ANYONECANPAY and OTDA, build each inp
 Start with the signature supplied in [spend-all.json](../template/spend-all.json). The callback must receive digest_hex and return signature_hex. All three SDKs reproduce the given scriptSig and signed txid. Then replace the fixture callback with a device digest signer. A different valid device signature may produce a different txid. Convert a DER signature by decoding its two positive integers and left-padding each to 32 big-endian bytes. A message-signing API that hashes its input once needs an adapter with the corresponding message available. Passing the SDK's digest into such an API would hash it again.
 
 ```sh
-(cd sdk/typescript && npm install && npm run check && npm test)
-(cd sdk/rust && cargo test)
-(cd sdk/go && go test ./...)
+(cd projects/p2pkh-r1/sdk/typescript && npm install && npm run check && npm test)
+(cd projects/p2pkh-r1/sdk/rust && cargo test)
+(cd projects/p2pkh-r1/sdk/go && go test ./...)
 ```
 
 The three test suites check the A/B/C constructor vectors, curve-point validation, fixed-byte changes, truncation, appended bytes, ordinary signed payments, incorrect signatures and fee mismatches. These tests require no device, node or signing secret. Installing dependencies initially requires network access. See the [reference guide](../reference/README.md) for node-level verification.
