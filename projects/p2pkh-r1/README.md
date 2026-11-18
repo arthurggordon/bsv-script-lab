@@ -11,6 +11,7 @@ P2PKH-R1 允许付款人只凭 R1 公钥哈希创建输出。普通付款固定�
 | Script template, wire format and signing rules | [协议规范](../../docs/spec.zh-CN.md) | [Specification](../../docs/spec.en.md) |
 | TypeScript, Rust and Go wallet integration | [SDK 接入](../../docs/sdk.zh-CN.md) | [SDK guide](../../docs/sdk.en.md) |
 | Consensus and policy considerations | [Chronicle 规则](../../docs/chronicle.md) | [Chronicle rules](../../docs/chronicle.md) |
+| Compiled script sizes and test settings | [sCrypt 体积对照](scrypt-comparison.md) | [sCrypt comparison](scrypt-comparison.md) |
 
 The [binary layout and generation vectors](../../template/layout.json) define recognition. The [payment vector](../../template/spend-all.json) supplies a digest, fixed test signature, unlocking bytes and signed txid for offline replay. Source SDKs support output generation, owner recognition and ordinary single-input payments. The [reference wallet and assembly](../../reference/README.md) also cover mixed inputs and Chronicle OTDA.
 
