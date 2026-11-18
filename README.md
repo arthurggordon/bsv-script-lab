@@ -6,6 +6,13 @@ BSV Script Lab 是我们公开研究 BSV 上 Bitcoin Script 的仓库。这里�
 
 ## Projects · 公开项目
 
+### [Native P2PK and P2PKH baseline](projects/p2pk-p2pkh-baseline/README.md)
+
+Conventional secp256k1 P2PK and P2PKH fixtures for comparison with the research
+templates. Includes reproducible locking bytes and five offline validation cases.
+
+原生 secp256k1 P2PK／P2PKH 对照样例，提供可复现的锁定脚本和五个离线验签用例。
+
 ### [P2PKH-R1](projects/p2pkh-r1/README.md)
 
 Our first public script project is a payment template for P-256 (secp256r1) keys. A payer can create an output from the recipient’s public-key hash, and the recipient authorizes an ordinary spend with one device signature.
