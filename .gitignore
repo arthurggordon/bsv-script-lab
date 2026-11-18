@@ -1,2 +1,6 @@
-.venv/
 __pycache__/
+*.py[cod]
+.venv/
+node_modules/
+target/
+scriptPubKey.bin
