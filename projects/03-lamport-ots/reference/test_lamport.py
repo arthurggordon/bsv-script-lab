@@ -5,8 +5,8 @@ from pathlib import Path
 import unittest
 from lamport import *
 from script import locking_script, binding, N, R
-from payment import sign_payment
-from fixtures import fixture, test_secret, cases
+from payment import authorization, sign_payment, sign_spend
+from fixtures import fixture, test_secret, cases, mode_cases
 from engines import development_valid, chain_valid
 from shared.evaluate import evaluate, ScriptError
 from shared.script import push
@@ -81,6 +81,38 @@ class LamportTests(unittest.TestCase):
                 self.assertEqual(development_valid(tx,parents[index],index),expected)
                 self.assertEqual(chain_valid(tx,parents),expected)
 
+    def test_full_sighash_matrix(self):
+        for label,tx,parents,index,expected in mode_cases():
+            with self.subTest(case=label):
+                self.assertEqual(development_valid(tx,parents[index],index),expected)
+                self.assertEqual(chain_valid(tx,parents),expected)
+
+    def test_external_signer_contract(self):
+        secret,key,_,parent,tx,*_ = fixture()
+        calls = []
+        def callback(digest):
+            calls.append(digest)
+            return sign_digest(secret,digest)
+        for bad_index, funding, flag in (
+            (1,parent,0x41), (0,Transaction(parent.inputs,parent.outputs,locktime=1),0x41),
+            (0,parent,0x61), (0,parent,0x01),
+        ):
+            with self.assertRaises(ValueError):
+                sign_spend(tx,bad_index,funding.serialize(),key,callback,sighash=flag)
+        self.assertEqual(calls,[])
+        signed = sign_spend(tx,0,parent.serialize(),key,callback)
+        self.assertEqual(calls,[authorization(tx,0,10000,legacy=True).digest()])
+        self.assertTrue(chain_valid(signed,[parent]))
+        with self.assertRaises(ValueError):
+            sign_spend(signed,0,parent.serialize(),key,callback)
+        self.assertEqual(len(calls),1)
+        def bad_callback(digest):
+            calls.append(digest)
+            return bytes(8192)
+        with self.assertRaisesRegex(ValueError,'external signer'):
+            sign_spend(tx,0,parent.serialize(),key,bad_callback)
+        self.assertEqual(len(calls),2)
+
     def test_binding_der_edges(self):
         # Exercise small/large/minimal DER s and modulo n boundaries without trying
         # to find transaction preimages with those astronomically rare digests.
@@ -114,20 +146,21 @@ class LamportTests(unittest.TestCase):
     def test_payment_and_fresh_change(self):
         secret,key,lock,parent,*_ = fixture()
         signer = OneTimeSigner(secret)
-        with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(9900,lock)],100,signer)
-        with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(9000,b'\x51')],100,signer)
-        with self.assertRaises(ValueError): sign_payment(parent.serialize(),1,[Output(9900,b'\x51')],100,signer)
+        with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(9900,lock)],100,signer.public_key,signer.sign)
+        with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(9000,b'\x51')],100,signer.public_key,signer.sign)
+        with self.assertRaises(ValueError): sign_payment(parent.serialize(),1,[Output(9900,b'\x51')],100,signer.public_key,signer.sign)
         other = OneTimeSigner(test_secret(b'next'))
-        tx = sign_payment(parent.serialize(),0,[Output(9900,locking_script(other.public_key))],100,signer)
+        tx = sign_payment(parent.serialize(),0,[Output(9900,locking_script(other.public_key))],100,signer.public_key,signer.sign)
         self.assertTrue(chain_valid(tx,[parent]))
-        next_tx = sign_payment(tx.serialize(),0,[Output(9800,b'\x51')],100,other)
+        next_tx = sign_payment(tx.serialize(),0,[Output(9800,b'\x51')],100,other.public_key,other.sign)
         self.assertTrue(chain_valid(next_tx,[tx]))
-        with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(9900,b'\x51')],100,signer)
-        with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(9900,b'\x51')],100,OneTimeSigner(test_secret(b'wrong')))
+        with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(9900,b'\x51')],100,signer.public_key,signer.sign)
+        with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(9900,b'\x51')],100,public_key(test_secret(b'wrong')),signer.sign)
 
     def test_reproducible_vectors(self):
-        from measure import vector
+        from measure import universal_vector, vector
         self.assertEqual(json.loads((ROOT/'template/vector.json').read_text()),vector())
+        self.assertEqual(json.loads((ROOT/'template/universal-vectors.json').read_text()),universal_vector())
 
 
 if __name__ == '__main__': unittest.main()

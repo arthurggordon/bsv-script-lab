@@ -1,10 +1,9 @@
 """BSV Node 1.2.3 RPC conformance. Fails if REGTEST_COOKIE is not supplied."""
-import json
 import os
 from pathlib import Path
 import unittest
 import requests
-from fixtures import cases, fixture, test_secret
+from fixtures import cases, fixture, test_secret, mode_cases
 from lamport import OneTimeSigner, public_key, sign_digest
 from payment import sign_payment
 from script import locking_script
@@ -40,13 +39,22 @@ class NodeTests(unittest.TestCase):
                 count += 1
         print(f'BSV Node + chain-gang: {count} complete-input cases')
 
+    def test_full_sighash_matrix(self):
+        count = 0
+        for label,tx,parents,index,expected in mode_cases():
+            with self.subTest(case=label):
+                self.assertEqual(node_check(tx,parents[index],index),expected)
+                self.assertEqual(chain_valid(tx,parents),expected)
+                count += 1
+        print(f'BSV Node + chain-gang: {count} universal sighash cases')
+
     def test_fresh_key_payment_chain(self):
         secret,_,_,parent,*_ = fixture()
         first = OneTimeSigner(secret)
         second = OneTimeSigner(test_secret(b'node-next'))
-        tx = sign_payment(parent.serialize(),0,[Output(9900,locking_script(second.public_key))],100,first)
+        tx = sign_payment(parent.serialize(),0,[Output(9900,locking_script(second.public_key))],100,first.public_key,first.sign)
         self.assertTrue(node_check(tx,parent,0))
-        spend = sign_payment(tx.serialize(),0,[Output(9800,b'\x51')],100,second)
+        spend = sign_payment(tx.serialize(),0,[Output(9800,b'\x51')],100,second.public_key,second.sign)
         self.assertTrue(node_check(spend,tx,0))
 
     def test_digest_only_is_not_a_payment_lock(self):

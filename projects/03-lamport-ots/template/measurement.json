@@ -4,7 +4,7 @@
   "machine": "arm64",
   "python": "3.12.16",
   "iterations": 30,
-  "sizes": {
+  "legacy_sizes": {
     "secret_key_bytes": 16384,
     "public_key_bytes": 16384,
     "signature_bytes": 8192,
@@ -21,7 +21,18 @@
     "hash256_opcodes": 1,
     "checksig_opcodes": 1
   },
-  "development_stack_peaks_for_fixture": {
+  "universal_sizes": {
+    "locking_script_bytes_including_key": 22780,
+    "locking_non_key_bytes_including_push_headers": 6396,
+    "forkid_ordinary_unlocking_script_bytes": 8357,
+    "forkid_ordinary_total_lock_and_unlock_bytes": 31137,
+    "unpaired_otda_single_unlocking_script_bytes": 8361,
+    "locking_instructions_including_pushes_and_both_branches": 5762,
+    "sha256_opcodes": 256,
+    "hash256_opcodes": 1,
+    "native_signature_opcodes": 2
+  },
+  "development_stack_peaks_for_legacy_fixture": {
     "main_items": 5,
     "alt_items": 32,
     "combined_items": 33,
@@ -29,34 +40,44 @@
   },
   "timings": {
     "keygen_including_public_hashes": {
-      "median_ms": 0.269583,
-      "min_ms": 0.263834,
-      "max_ms": 0.305041
+      "median_ms": 0.269271,
+      "min_ms": 0.265666,
+      "max_ms": 0.3305
     },
     "sign_digest_stateless": {
-      "median_ms": 0.044708,
-      "min_ms": 0.043833,
-      "max_ms": 0.049125
+      "median_ms": 0.04427,
+      "min_ms": 0.043875,
+      "max_ms": 0.045875
     },
     "verify_digest": {
-      "median_ms": 0.153583,
-      "min_ms": 0.148625,
-      "max_ms": 0.198209
+      "median_ms": 0.149855,
+      "min_ms": 0.149333,
+      "max_ms": 0.150541
     },
     "generate_locking_script": {
-      "median_ms": 1.471395,
-      "min_ms": 1.446916,
-      "max_ms": 1.640667
+      "median_ms": 1.594542,
+      "min_ms": 1.516666,
+      "max_ms": 1.761458
     },
     "development_full_script_with_python_ecdsa": {
-      "median_ms": 4.249521,
-      "min_ms": 4.137292,
-      "max_ms": 4.740792
+      "median_ms": 4.370605,
+      "min_ms": 4.161125,
+      "max_ms": 5.153333
     },
-    "chain_gang_complete_transaction": {
-      "median_ms": 0.293208,
-      "min_ms": 0.281208,
-      "max_ms": 0.353291
+    "chain_gang_legacy_all_transaction": {
+      "median_ms": 0.298729,
+      "min_ms": 0.283875,
+      "max_ms": 0.400208
+    },
+    "chain_gang_universal_all_transaction": {
+      "median_ms": 0.319333,
+      "min_ms": 0.2965,
+      "max_ms": 0.365375
+    },
+    "chain_gang_universal_companion_transaction": {
+      "median_ms": 0.362521,
+      "min_ms": 0.349541,
+      "max_ms": 0.443375
     }
   }
 }

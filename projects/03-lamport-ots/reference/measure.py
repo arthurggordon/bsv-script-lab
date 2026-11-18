@@ -7,11 +7,12 @@ import platform
 from statistics import median
 from time import perf_counter_ns
 from lamport import generate_keypair, public_key, sign_digest, verify_digest
-from fixtures import fixture, cases
+from fixtures import fixture, mode_fixture
 from script import locking_script, binding
+from payment import authorization
 from engines import chain_valid, development_valid
 from shared.script import push
-from shared.transaction import hash256
+from shared.transaction import SIGHASH_TYPES, hash256
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -66,6 +67,42 @@ def sizes():
     }
 
 
+def universal_vector():
+    rows = []
+    for flag in sorted(SIGHASH_TYPES):
+        for paired in ((True, False) if flag & 31 == 3 else (True,)):
+            _,parents,tx = mode_fixture(flag,paired=paired)
+            previous = parents[1].outputs[0]
+            auth = authorization(tx,1,previous.value,flag)
+            unlock = tx.inputs[1].script
+            rows.append({
+                'sighash': f'{flag:02x}', 'paired': paired, 'companion': auth.companion,
+                'locking_bytes': len(previous.script), 'locking_sha256': sha256(previous.script).hexdigest(),
+                'preimage_hex': auth.preimage.hex(), 'digest_hex': auth.digest().hex(),
+                'unlocking_bytes': len(unlock), 'unlocking_sha256': sha256(unlock).hexdigest(),
+                'funding_txid': parents[1].txid(), 'signed_txid': tx.txid(),
+            })
+    return {'warning': 'Public test keys. Reproduce via fixtures.mode_fixture; never fund.', 'cases': rows}
+
+
+def universal_sizes():
+    _,parents,tx = mode_fixture(0x41)
+    lock = parents[1].outputs[0].script
+    ops = instructions(lock)
+    unlock_bytes = len(tx.inputs[1].script)
+    return {
+        'locking_script_bytes_including_key': len(lock),
+        'locking_non_key_bytes_including_push_headers': len(lock)-16384,
+        'forkid_ordinary_unlocking_script_bytes': unlock_bytes,
+        'forkid_ordinary_total_lock_and_unlock_bytes': len(lock)+unlock_bytes,
+        'unpaired_otda_single_unlocking_script_bytes': len(mode_fixture(0x63,paired=False)[2].inputs[1].script),
+        'locking_instructions_including_pushes_and_both_branches': len(ops),
+        'sha256_opcodes': sum(op==0xa8 and data is None for op,data in ops),
+        'hash256_opcodes': sum(op==0xaa and data is None for op,data in ops),
+        'native_signature_opcodes': sum(op in (0xac,0xad) and data is None for op,data in ops),
+    }
+
+
 def stack_profile():
     # Observe the development interpreter's actual stack for the public vector.
     # This is payload accounting, not the node's allocator/resource accounting.
@@ -95,6 +132,9 @@ def benchmark(iterations=30):
     secret,key,lock,parent,tx,pre,sig = fixture()
     digest = hash256(pre)
     signed = tx.with_script(0,push(pre)+push(sig))
+    _,universal_parents,universal = mode_fixture(0x41)
+    _,companion_parents,companion = mode_fixture(0xe3,paired=False)
+    assert chain_valid(universal,universal_parents) and chain_valid(companion,companion_parents)
     def measure(fn):
         for _ in range(3): fn()
         values=[]
@@ -103,14 +143,17 @@ def benchmark(iterations=30):
         return {'median_ms':round(median(values),6),'min_ms':round(min(values),6),'max_ms':round(max(values),6)}
     return {'scope':'Local wall-clock, warmup=3; includes Python adapter overhead; not miner throughput or network fee',
             'platform':platform.platform(),'machine':platform.machine(),'python':platform.python_version(),'iterations':iterations,
-            'sizes':sizes(), 'development_stack_peaks_for_fixture':stack_profile(),
+            'legacy_sizes':sizes(), 'universal_sizes':universal_sizes(),
+            'development_stack_peaks_for_legacy_fixture':stack_profile(),
             'timings':{name:measure(fn) for name,fn in {
                 'keygen_including_public_hashes':generate_keypair,
                 'sign_digest_stateless':lambda:sign_digest(secret,digest),
                 'verify_digest':lambda:verify_digest(key,digest,sig),
                 'generate_locking_script':lambda:locking_script(key),
                 'development_full_script_with_python_ecdsa':lambda:development_valid(signed,parent,0),
-                'chain_gang_complete_transaction':lambda:chain_valid(signed,[parent]),
+                'chain_gang_legacy_all_transaction':lambda:chain_valid(signed,[parent]),
+                'chain_gang_universal_all_transaction':lambda:chain_valid(universal,universal_parents),
+                'chain_gang_universal_companion_transaction':lambda:chain_valid(companion,companion_parents),
             }.items()}}
 
 
@@ -121,4 +164,5 @@ if __name__ == '__main__':
     args=parser.parse_args()
     if args.write_vector:
         (ROOT/'template/vector.json').write_text(json.dumps(vector(),indent=2)+'\n')
-    print(json.dumps(benchmark() if args.benchmark else sizes(),indent=2))
+        (ROOT/'template/universal-vectors.json').write_text(json.dumps(universal_vector(),indent=2)+'\n')
+    print(json.dumps(benchmark() if args.benchmark else universal_sizes(),indent=2))

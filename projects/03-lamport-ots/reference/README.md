@@ -6,7 +6,7 @@ Independent tests use the pinned chain-gang commit and BSV Node 1.2.3.
 
 - `lamport.py`: random key generation, strict digest API, process-local one-time guard.
 - `script.py`: deterministic unrolled verifier and fixed-r PUSHTX binding.
-- `payment.py`: one-input transaction construction, fee arithmetic, fresh-change guard.
+- `payment.py`: prepared-input and single-input wallet APIs, external signer, fresh-change guard.
 - `fixtures.py`: public deterministic secrets for tests only, adversarial case matrix.
 - `engines.py`: development ECDSA callback and complete-transaction chain-gang adapter.
 - `test_lamport.py`: unit, adversarial and differential tests; no node required.
@@ -28,12 +28,18 @@ Path('/tmp/lamport-test-lock.bin').write_bytes(fixture()[2])
 PY
 ```
 
-The deterministic vector stores the full public key, signature, preimage, lock
-fingerprint and transaction IDs; the secret derivation is published explicitly.
-Regenerate with `measure.py --write-vector`; tests require exact JSON equality.
-Do not fund this fixture. Real callers use `generate_keypair()` and a fresh
-`OneTimeSigner`, authenticate their funding transaction, and approve outputs/fees
-before calling `sign_payment`. The caller must add persistent key-use protection.
+The vectors use public test keys. Regenerate both with `measure.py --write-vector`.
+The original ALL vector stores full public key and signature bytes. The universal
+vectors record preimages and lock/unlock fingerprints for every supported mode,
+including the unpaired SINGLE paths.
+
+Use `sign_payment(funding_raw, vout, outputs, fee, public_key, signer)` for an
+ordinary single-input payment. Use
+`sign_spend(tx, input_index, funding_raw, public_key, signer, sighash=...)`
+for a prepared transaction. Each API accepts `signer(digest32) -> signature8192`
+and returns a signed transaction. The callback is invoked once after preflight.
+Authenticate the funding and confirm the transaction and sighash before calling.
+Keep private keys and durable one-use state in the signer.
 
 Apple Container uses host RPC port 18449 by default; set `LAMPORT_RPC_PORT` if
 occupied. Its node has no peers and is removed after testing. Linux CI uses port

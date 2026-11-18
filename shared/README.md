@@ -1,6 +1,6 @@
 # Shared development utilities
 
-Dependency-free Script encoding, fixed ForkID ALL transaction serialization,
+Dependency-free Script encoding, ForkID BIP143 and Chronicle OTDA preimage serialization,
 a deliberately incomplete development interpreter, and a BSV Node 1.2.3 Linux
 regtest launcher. Extracted from the local SM2 experiment for the third project;
 the existing top-level R1 implementation and its canonical bytes are unchanged.

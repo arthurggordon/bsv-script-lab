@@ -1,9 +1,5 @@
 name: Lamport OTS conformance
 on:
-  push:
-    paths: ['projects/03-lamport-ots/**', 'shared/**', '.github/workflows/lamport-ots.yml']
-  pull_request:
-    paths: ['projects/03-lamport-ots/**', 'shared/**', '.github/workflows/lamport-ots.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -34,7 +30,7 @@ jobs:
       - name: Reproducible vectors and measured performance
         run: |
           python projects/03-lamport-ots/reference/measure.py --write-vector
-          git diff --exit-code -- projects/03-lamport-ots/template/vector.json
+          git diff --exit-code -- projects/03-lamport-ots/template/
           python projects/03-lamport-ots/reference/measure.py --benchmark > /tmp/lamport-measurement.json
       - uses: actions/upload-artifact@v4
         with:

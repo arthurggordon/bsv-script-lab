@@ -13,8 +13,9 @@ protect copied keys, process restarts, backups, rollback, or duplicate funding.
 - `locking_script(key, transaction=False)` checks a supplied 32-byte digest only.
   **Never fund this script**: an observer can replay the proof into another spend.
 - `locking_script(key)` additionally binds the authorized digest to the current
-  input using a fixed-r PUSHTX construction and native `OP_CHECKSIG`, fixed ForkID
-  ALL (`0x41`). No externally supplied ECDSA signature can bypass the binding.
+  input using fixed-r PUSHTX. It supports ForkID BIP143 and Chronicle OTDA
+  ALL, NONE and SINGLE, each with optional ANYONECANPAY. The wallet default
+  is ForkID ALL (`0x41`). Production signing uses an external callback.
 
 The hash-based signature is a post-quantum research building block. The complete
 payment construction needs its own security analysis: [binding and one-time
@@ -28,15 +29,16 @@ system or a standardized “256-bit quantum security” level.
 | Secret key / public key | 16,384 each |
 | Signature | 8,192 |
 | Digest-only locking script, including public key | 21,876 |
-| Transaction locking script, including public key | 22,491 |
-| Non-key portion of transaction lock, including push headers | 6,107 |
-| Unlocking script, including preimage and push headers | 8,355 |
-| Lock + unlock | 30,846 |
+| Universal locking script, including public key | 22,780 |
+| Non-key portion of transaction lock, including push headers | 6,396 |
+| Ordinary BIP143 unlocking script | 8,357 |
+| Unpaired OTDA SINGLE unlocking script | 8,361 |
+| Lock + ordinary BIP143 unlock | 31,137 |
 
-The previous 26–32 KiB estimate is consistent with this 30.12 KiB combined result;
-6,107 bytes are the non-key portion, not the entire verifier. The spent lock is
-stored in the funding transaction, not repeated in the 8,418-byte example spend.
-Timings and opcode definitions: [measurement.json](template/measurement.json).
+The universal BIP143 ALL path totals 30.41 KiB. The original two-push
+ForkID ALL lock and vector remain available. OTDA ordinary witness size
+varies with the serialized transaction. Full measurements are in
+[measurement.json](template/measurement.json).
 
 ## Run
 
@@ -55,4 +57,5 @@ bash projects/03-lamport-ots/reference/verify.sh
 ```
 
 [Validation receipt](docs/validation.md) · [Protocol and layout](docs/spec.md) · [Reference usage](reference/README.md) ·
-[Public deterministic test vector](template/vector.json)
+[Original ALL vector](template/vector.json) ·
+[Universal sighash vectors](template/universal-vectors.json)

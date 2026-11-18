@@ -1,4 +1,4 @@
-"""Legacy BSV transaction wire format and fixed ForkID ALL preimages."""
+"""Legacy BSV transaction wire format and ForkID and OTDA sighash preimages."""
 from dataclasses import dataclass, replace
 from hashlib import sha256
 
@@ -72,10 +72,57 @@ class Transaction:
         return result
 
 
-def preimage_all(tx,index,previous_amount,script_code=b'\xac'):
-    if not 0<=index<len(tx.inputs): raise ValueError('invalid input index')
-    current=tx.inputs[index]
-    return (tx.version.to_bytes(4,'little')+hash256(b''.join(x.outpoint() for x in tx.inputs))+
-            hash256(b''.join(x.sequence.to_bytes(4,'little') for x in tx.inputs))+current.outpoint()+
-            blob(script_code)+amount(previous_amount)+current.sequence.to_bytes(4,'little')+
-            hash256(b''.join(x.serialize() for x in tx.outputs))+tx.locktime.to_bytes(4,'little')+b'\x41\0\0\0')
+SIGHASH_ALL, SIGHASH_NONE, SIGHASH_SINGLE = 1, 2, 3
+FORKID, CHRONICLE, ANYONECANPAY = 0x40, 0x20, 0x80
+FORKID_TYPES = frozenset(FORKID | base | flags for base in (1, 2, 3) for flags in (0, ANYONECANPAY))
+OTDA_TYPES = frozenset(flag | CHRONICLE for flag in FORKID_TYPES)
+SIGHASH_TYPES = FORKID_TYPES | OTDA_TYPES
+
+
+def preimage_forkid(tx, index, previous_amount, script_code, sighash):
+    if sighash not in FORKID_TYPES or not 0 <= index < len(tx.inputs):
+        raise ValueError('invalid ForkID sighash or input index')
+    base = sighash & 31
+    anyone = sighash & ANYONECANPAY
+    current = tx.inputs[index]
+    prevouts = sequences = outputs = bytes(32)
+    if not anyone:
+        prevouts = hash256(b''.join(x.outpoint() for x in tx.inputs))
+        if base == SIGHASH_ALL:
+            sequences = hash256(b''.join(x.sequence.to_bytes(4, 'little') for x in tx.inputs))
+    if base == SIGHASH_ALL:
+        outputs = hash256(b''.join(x.serialize() for x in tx.outputs))
+    elif base == SIGHASH_SINGLE and index < len(tx.outputs):
+        outputs = hash256(tx.outputs[index].serialize())
+    return (tx.version.to_bytes(4, 'little') + prevouts + sequences + current.outpoint() +
+            blob(script_code) + amount(previous_amount) + current.sequence.to_bytes(4, 'little') +
+            outputs + tx.locktime.to_bytes(4, 'little') + sighash.to_bytes(4, 'little'))
+
+
+def preimage_all(tx, index, previous_amount, script_code=b'\xac'):
+    return preimage_forkid(tx, index, previous_amount, script_code, FORKID | SIGHASH_ALL)
+
+
+def preimage_otda(tx, index, script_code, sighash):
+    """Serialize OTDA with a caller-supplied, already cleaned scriptCode."""
+    if sighash not in OTDA_TYPES or not 0 <= index < len(tx.inputs):
+        raise ValueError('invalid OTDA sighash or input index')
+    base = sighash & 31
+    if base == SIGHASH_SINGLE and index >= len(tx.outputs):
+        raise ValueError('unpaired OTDA SINGLE has no transaction preimage')
+    inputs = (index,) if sighash & ANYONECANPAY else range(len(tx.inputs))
+    serialized_inputs = []
+    for i in inputs:
+        txin = tx.inputs[i]
+        script = script_code if i == index else b''
+        sequence = txin.sequence if i == index or base == SIGHASH_ALL else 0
+        serialized_inputs.append(txin.outpoint() + blob(script) + sequence.to_bytes(4, 'little'))
+    if base == SIGHASH_NONE:
+        outputs = ()
+    elif base == SIGHASH_SINGLE:
+        outputs = (b'\xff'*8 + b'\0',)*index + (tx.outputs[index].serialize(),)
+    else:
+        outputs = tuple(output.serialize() for output in tx.outputs)
+    return (tx.version.to_bytes(4, 'little') + compact(len(inputs)) + b''.join(serialized_inputs) +
+            compact(len(outputs)) + b''.join(outputs) + tx.locktime.to_bytes(4, 'little') +
+            sighash.to_bytes(4, 'little'))

@@ -15,48 +15,68 @@ signature format. The public deterministic fixture is a regression vector, not
 an official standard test vector. `generate_keypair()` uses OS-backed randomness;
 the fixture derivation is deliberately separate and must never hold funds.
 
-## Script and stack
+## Witness and supported modes
 
-Full public commitments are inline in the locking script, with two 32-byte pushes
-per bit. The witness has exactly two stack elements: P (158 bytes), S (8,192 bytes).
-Signature blocks remain packed and are consumed with SPLIT; no 256-item witness
-stack or 512-item public-key stack is required. Each byte is converted to an
-unsigned integer by appending a zero byte before BIN2NUM. MOD 2 chooses the key
-branch, DIV 2 advances to the next bit. All bytes and blocks must be consumed.
-The final stack is exactly one true item and the altstack is empty.
+The universal locking script embeds the full public key and expects three stack
+items, bottom to top: preimage P, packed 8,192-byte signature S, and a selector.
+The selector is exactly empty for ordinary authorization or the single byte
+`01` for the unpaired Chronicle SINGLE path. Each digest byte is converted to an
+unsigned Script number. MOD 2 selects one of the two inline commitments and
+DIV 2 advances the bit index. The verifier consumes all digest and signature
+bytes and leaves one true item and an empty altstack.
 
-The digest-only variant substitutes a 32-byte D for P and returns true after
-Lamport verification. It deliberately does not authorize any transaction.
+| Output coverage | BIP143 | BIP143 + ANYONECANPAY | Chronicle OTDA | OTDA + ANYONECANPAY |
+|---|---|---|---|---|
+| ALL | `41` | `c1` | `61` | `e1` |
+| NONE | `42` | `c2` | `62` | `e2` |
+| SINGLE | `43` | `c3` | `63` | `e3` |
 
-## Current-input payment digest
+All twelve types include FORKID, as required by the node under strict encoding
+with FORKID enabled. The hash type is the final four little-endian bytes of P.
+The script verifies the exact type, including zero high bytes, and uses the
+authenticated byte on the native signature. The wallet default is `41`.
 
-D = SHA256d(P), with P the BIP143/ForkID ALL serialization:
+## Ordinary payment digest
 
-| Offset | Length | Field |
-|---|---:|---|
-| 0 | 4 | Transaction version, LE |
-| 4 | 32 | SHA256d(all input outpoints) |
-| 36 | 32 | SHA256d(all input sequences) |
-| 68 | 36 | Current outpoint |
-| 104 | 2 | CompactSize + scriptCode, exactly `01 ac` |
-| 106 | 8 | Current prevout satoshis, LE |
-| 114 | 4 | Current sequence, LE |
-| 118 | 32 | SHA256d(all serialized outputs) |
-| 150 | 4 | Locktime, LE |
-| 154 | 4 | Sighash type, exactly `41 00 00 00` |
+Lamport signs SHA256d(P). The last executed code separator sets native scriptCode
+to `68ac` in the ordinary path. Ordinary BIP143 checks that P is 159 bytes and
+contains `02 68 ac` at offset 104. Its fields are version, hashPrevouts,
+hashSequence, current outpoint, length-prefixed scriptCode, previous amount,
+current sequence, hashOutputs, locktime, and the four-byte type.
+OTDA uses the original transaction serializer with other inputs' scripts
+blanked, the active input's script replaced with `68ac`, and a type-specific
+input/output selection. Its preimage has variable length and omits the prevout
+amount. The node authenticates the serialized fields through the fixed-r
+signature relation described in [security.md](security.md).
 
-The script enforces total length, scriptCode, and type before hashing. The final
-`OP_CODESEPARATOR OP_CHECKSIG` means the native checker hashes scriptCode `ac`.
-The other fields are authenticated by the fixed-r native-check relation described
-in [security.md](security.md), not by trusting the witness or a host callback.
-All inputs' outpoints/sequences and all outputs are committed. ScriptSigs,
-other inputs' amounts/scripts and funding-chain validity are not authenticated
-by this signature. Wallets must authenticate their UTXOs separately.
+ALL covers all outputs, NONE covers no outputs, and SINGLE covers the output
+at the signing input index when it exists. The current outpoint, sequence,
+version and locktime are committed. Without ANYONECANPAY, all input outpoints
+are covered. Other inputs' sequences are covered only by ALL without
+ANYONECANPAY. Other inputs' scripts and prevout amounts are outside the
+authorization. BIP143 SINGLE with ANYONECANPAY permits movement of the
+input-output pair together. OTDA SINGLE commits to its output index through
+the serialized null outputs before the selected output.
 
-No ANYONECANPAY, SINGLE, NONE, OTDA, optional recovery path, or mutable fee mode is
-supported. Multi-input transactions use `current_input_unlock` once for each
-fresh Lamport key. The higher-level `sign_payment` API intentionally constructs
-one input and rejects change to the same canonical Lamport key.
+## SINGLE with no paired output
+
+BIP143 SINGLE still binds the current input, using a zero hashOutputs. OTDA
+SINGLE instead returns the native constant `01 00…00`. For requested `63` or
+`e3` in this case, Lamport signs the BIP143 `43` or `c3` digest with distinct
+scriptCode `63ad67ab68ac`. The script requires this exact 163-byte preimage
+layout, the matching type, and zero hashOutputs. It first checks a script-derived
+signature for the native OTDA constant using the requested type, then performs
+the BIP143 current-input binding. The intervening code separator is not
+executed in this branch, so the BIP143 scriptCode includes it. The owner
+never signs the constant.
+
+## Previous template and detached verification
+
+`legacy_locking_script(key)` emits the original byte-identical two-push
+ForkID ALL template with 158-byte preimage and scriptCode `ac`.
+`sign_spend` recognizes it and requires type `41`. New locks from
+`locking_script(key)` use the universal format. The digest-only variant takes
+a 32-byte digest and signature and provides detached verification.
 
 ## Compatibility and resources
 
@@ -71,7 +91,8 @@ or network-wide consensus testing. Node tests also cross-check pinned chain-gang
 
 Static opcode counts in `measurement.json` exclude payload bytes; both branches
 are counted in the encoded instruction totals, although only one public-key push
-per bit executes. There are 256 SHA256, one HASH256 and one CHECKSIG instructions.
+per bit executes. The universal script has 256 SHA256 instructions, one HASH256 and two native
+signature instructions. Both signature checks execute only in the companion branch.
 Node-native signature hashing performs additional work not counted by this static
 Script census. Timings include adapters and are local wall-clock samples.
 

@@ -17,7 +17,7 @@ P2PKH-R1 是本仓库首个公开的脚本项目。收款方提供 P-256 公钥�
 ### [03 · Lamport OTS (SHA-256)](projects/03-lamport-ots/README.md)
 
 A third experimental project: 256-bit Lamport one-time signatures, unrolled BSV
-Script, fixed ForkID ALL transaction binding, adversarial tests, public vectors,
+Script, BIP143 and Chronicle OTDA transaction binding, public vectors,
 and measured sizes/performance. Read the explicit one-time and transaction-binding
 security boundaries before using it. The second SM2 experiment and its directory
 migration are maintained separately and are not bundled into this change.

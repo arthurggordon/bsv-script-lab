@@ -15,7 +15,7 @@ Script constructs, rather than accepts from the witness,
 ```
 s0 = (h + r) mod n
 s = min(s0, n - s0)
-signature = strict-DER(r, s) || 0x41
+signature = strict-DER(r, s) || authenticated_type
 ```
 
 It rejects s0=0. Both private key d=1 and nonce k=1 are public by design. This
@@ -46,10 +46,20 @@ chosen-message security, multiple targets, hash composition, one-time state and
 consensus semantics all need review before deployment. A 256-bit digest is not a
 claim of 256-bit quantum security.
 
-The script checks preimage length, exact scriptCode and exact sighash bytes before
-hashing. The final executed separator leaves only `ac` for native scriptCode.
-Its DER signature and sighash byte cannot be chosen independently by the witness.
-No detached, host-provided “CHECKSIG succeeded” result is accepted on chain.
+The script validates the sighash type before hashing the preimage. BIP143
+branches also enforce the exact preimage length and scriptCode. The native
+signature checks apply the selected digest algorithm and its coverage rules.
+The binding protects fields committed by the chosen mode. In particular,
+NONE lets outputs change, and SINGLE leaves outputs other than the paired one
+mutable. ANYONECANPAY lets other inputs change. The default is ForkID ALL.
+
+For unpaired Chronicle SINGLE, the first native check uses a fixed public
+signature to detect the OTDA constant, subject to the same small digest
+equivalence class. It supplies no owner authorization on its own. Lamport
+signs the BIP143 SINGLE digest with a branch-specific scriptCode and zero
+hashOutputs. The final native check enforces that binding, including the
+current outpoint and amount. Distinct scriptCode separates the ordinary
+and companion modes even where their BIP143 type bytes coincide.
 
 ## One-time means one disclosure, not one confirmed transaction
 
@@ -57,13 +67,17 @@ Never use a key for two messages, two inputs, two UTXOs, fee replacements, alter
 transactions, channels or retries that change the digest. Unconfirmed signatures
 already disclose secrets. Backups and process restarts do not reset that fact.
 
-`OneTimeSigner` consumes its secret reference before returning a signature and
-uses a lock to prevent concurrent calls. Even an identical-digest retry is refused.
-It cannot stop a copied secret or reconstructed signer. Durable key reservation,
-crash recovery, anti-rollback storage, signer import/export, secure erasure and
-broadcast persistence are deliberately not implemented. A wallet must persist
-consumption before disclosure and store the signed transaction for rebroadcast.
-A crash may sacrifice availability; it must not permit a second disclosure.
+The wallet receives a public key and an external `signer(digest32)` callback.
+It checks the funding outpoint and template before calling the signer once,
+then verifies the returned signature against the public key. The signer
+must persist key consumption before releasing the signature. Persist the
+resulting transaction for rebroadcast, and treat callback errors as potentially
+consumed keys. A crash may sacrifice availability to prevent a second disclosure.
+
+The reference `OneTimeSigner` demonstrates the one-use rule within a process.
+Production use requires durable state that survives restarts, parallel requests,
+and rollback. The callback owner must approve the transaction, sighash and fee
+before disclosure. A digest alone cannot communicate those choices.
 
 The payment helper rejects change to the same canonical key, but this is only a
 local guard. Script cannot remember that the same public key appears elsewhere.
@@ -74,8 +88,7 @@ demonstration, not an assertion that real transaction hashes can be chosen freel
 ## Detached digest verifier is intentionally unsafe as a payment lock
 
 An attacker can copy its digest and signature to a different transaction. The node
-test proves both differently directed spends pass that verifier. Only the default
-transaction-bound template is eligible for the experimental payment helper.
+test proves both differently directed spends pass that verifier. The payment helper requires a canonical transaction-bound template.
 
 ## Test scope
 
