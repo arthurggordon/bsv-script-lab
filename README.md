@@ -1,33 +1,123 @@
-# BSV Script Lab
+<h1 align="center">BSV Script Lab</h1>
 
-BSV Script Lab is a public repository for exploring Bitcoin Script on BSV. We publish script designs alongside reference code and reproducible test vectors so developers can inspect the script bytes, replay spends and review the results.
+<p align="center"><strong>Signature verification and transaction authorization in Bitcoin Script</strong></p>
 
-BSV Script Lab 是我们公开研究 BSV 上 Bitcoin Script 的仓库。这里收录脚本设计、参考代码和可复现的测试向量，方便开发者核对脚本字节、重放交易并评审设计。
+<p align="center">
+  <a href="README.zh-CN.md">简体中文</a> ·
+  <a href="#project-index">Projects</a> ·
+  <a href="#sighash-modes">Signature modes</a> ·
+  <a href="#run-checks">Run the checks</a>
+</p>
 
-## Projects · 公开项目
+Generate locking scripts, replay signed spends from reproducible vectors, and compare exactly what each signature commits to.
 
-### [Native P2PK and P2PKH baseline](projects/p2pk-p2pkh-baseline/README.md)
+---
 
-Conventional secp256k1 P2PK and P2PKH fixtures for comparison with the research
-templates. Includes reproducible locking bytes and five offline validation cases.
+<a name="project-index"></a>
 
-原生 secp256k1 P2PK／P2PKH 对照样例，提供可复现的锁定脚本和五个离线验签用例。
+## Projects
 
-### [P2PKH-R1](projects/p2pkh-r1/README.md)
+| Project | What it explores | Start here |
+|---|---|---|
+| [P2PKH-R1](projects/p2pkh-r1/README.md) | P-256 ECDSA authorization for a public-key hash, with a single device signature for an ordinary payment | [Specification](projects/p2pkh-r1/docs/spec.en.md) · [TypeScript, Rust and Go SDK guide](projects/p2pkh-r1/docs/sdk.en.md) |
+| [P2PKH-SM2](projects/p2pkh-sm2/README.md) | An experimental payment template that verifies SM2 and computes SM3 with ZA in Script | [Specification](projects/p2pkh-sm2/docs/spec.en.md) · [Python reference](projects/p2pkh-sm2/reference/README.md) |
+| [Lamport OTS](projects/03-lamport-ots/README.md) | Hash-based authorization using SHA-256. Each key is for one UTXO and one signature. | [Security model](projects/03-lamport-ots/docs/security.md) · [Validation record](projects/03-lamport-ots/docs/validation.md) |
 
-Our first public script project is a payment template for P-256 (secp256r1) keys. A payer can create an output from the recipient’s public-key hash, and the recipient authorizes an ordinary spend with one device signature.
+<details>
+<summary><strong>Compare script sizes</strong></summary>
 
-P2PKH-R1 是本仓库首个公开的脚本项目。收款方提供 P-256 公钥哈希即可收款，普通花费只需设备签名一次。目前处于开发者 RFC 阶段，提供 TypeScript、Rust 和 Go SDK。
+These are script byte counts for the reference templates using ordinary ForkID `ALL` (`0x41`).
 
-[Project overview / 项目介绍](projects/p2pkh-r1/README.md) · [中文规范](docs/spec.zh-CN.md) · [English specification](docs/spec.en.md)
+| Template | Locking script | Unlocking script |
+|---|---:|---:|
+| [P2PKH-R1](projects/p2pkh-r1/template/layout.json) | 59,582 B | 326 B |
+| [P2PKH-SM2 v2](projects/p2pkh-sm2/template/layout.json) | 199,777 B | 291 B |
+| [Lamport OTS](projects/03-lamport-ots/template/measurement.json) | 22,780 B | 8,357 B |
 
-### [03 · Lamport OTS (SHA-256)](projects/03-lamport-ots/README.md)
+The Lamport locking script includes the public key. An ordinary OTDA unlocking script varies with the transaction data being signed.
 
-A third experimental project: 256-bit Lamport one-time signatures, unrolled BSV
-Script, BIP143 and Chronicle OTDA transaction binding, public vectors,
-and measured sizes/performance. Read the explicit one-time and transaction-binding
-security boundaries before using it. The second SM2 experiment and its directory
-migration are maintained separately and are not bundled into this change.
+</details>
 
-第三个项目提供 Lamport SHA-256 密钥生成、签名验签、BSV Script 与交易绑定，
-并区分仅验证摘要的实验脚本和交易支付脚本。属于实验实现，尚非已审计抗量子钱包。
+<a name="sighash-modes"></a>
+
+## Signature modes
+
+The three reference payment templates support the twelve BIP143 ForkID and Chronicle OTDA combinations below. Select the mode per input. Ordinary payments default to `0x41`.
+
+| Output commitment | BIP143 ForkID | ForkID + ANYONECANPAY | Chronicle OTDA | OTDA + ANYONECANPAY |
+|---|---|---|---|---|
+| `ALL` · all outputs | `0x41` | `0xc1` | `0x61` | `0xe1` |
+| `NONE` · no outputs | `0x42` | `0xc2` | `0x62` | `0xe2` |
+| `SINGLE` · output at the input index, if present | `0x43` | `0xc3` | `0x63` | `0xe3` |
+
+<details>
+<summary><strong>P2PKH-SM2 v2 and unpaired SINGLE</strong></summary>
+
+A transaction may carry ForkID and OTDA signatures on different inputs. If an OTDA `SINGLE` input has no corresponding output, v2 checks a companion preimage that binds the SM2 authorization to the current input. Existing v1 outputs remain spendable with `0x41`.
+
+[SM2 transaction-binding rules](projects/p2pkh-sm2/docs/spec.en.md#transaction-scope-and-bytes) · [16 signing vectors](projects/p2pkh-sm2/template/sighash-modes.json)
+
+</details>
+
+<a name="run-checks"></a>
+
+## Run the checks
+
+From the repository root, check documentation links and rebuild the canonical R1 script bytes.
+
+```sh
+python3 -m unittest shared.test_layout -v
+```
+
+<details>
+<summary><strong>P2PKH-R1 · Rebuild a lock and verify complete inputs</strong></summary>
+
+Use Python 3.12, Git and Rust on Linux x86-64.
+
+```sh
+cd projects/p2pkh-r1/reference
+python -m pip install -r requirements.txt
+python generate_lock.py --owner-hash160 4ceab2c8be16c1d4c6b4147d39aa449c2d63f184
+bash verify.sh
+```
+
+[Reference implementation and conformance setup](projects/p2pkh-r1/reference/README.md)
+
+</details>
+
+<details>
+<summary><strong>P2PKH-SM2 · Standard vectors and OpenSSL interoperability</strong></summary>
+
+Use Python 3.12+ and OpenSSL with SM2/SM3 support.
+
+```sh
+cd projects/p2pkh-sm2/reference
+python3 -m pip install ecdsa==0.19.1
+python3 -m unittest -v test_sm2
+```
+
+[Complete-input tests, Chronicle activation cases and validation scope](projects/p2pkh-sm2/reference/README.md)
+
+</details>
+
+<details>
+<summary><strong>Lamport OTS · Reproduce the vectors and run the node check</strong></summary>
+
+Run from the repository root in an activated Python environment.
+
+```sh
+python -m pip install -r projects/03-lamport-ots/reference/requirements.txt
+python -m unittest discover -s projects/03-lamport-ots/reference -p test_lamport.py -v
+```
+
+Use `bash projects/03-lamport-ots/reference/verify.sh` on Linux x86-64 or `bash projects/03-lamport-ots/reference/verify_apple.sh` with Apple Container.
+
+[Reference tools and measurements](projects/03-lamport-ots/reference/README.md)
+
+</details>
+
+Use each project's reference guide for node setup and validation scope. GitHub Actions workflows are started manually. [Verification runs](https://github.com/linzhm/bsv-script-lab/actions)
+
+## Repository layout
+
+Each project lives under `projects/<name>/` with its own specifications, reference implementation and vectors. P2PKH-R1 also provides TypeScript, Rust and Go SDKs. Script encoding, transaction serialization and the node launcher are in [`shared/`](shared/README.md).

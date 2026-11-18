@@ -1,14 +1,9 @@
-# Shared development utilities
+# Shared development infrastructure
 
-Dependency-free Script encoding, ForkID BIP143 and Chronicle OTDA preimage serialization,
-a deliberately incomplete development interpreter, and a BSV Node 1.2.3 Linux
-regtest launcher. Extracted from the local SM2 experiment for the third project;
-the existing top-level R1 implementation and its canonical bytes are unchanged.
+- `script.py`: dependency-free Script byte encoder and literal-block assembler. Migration tests reconstruct the existing R1 program byte for byte.
+- `transaction.py`: BSV transaction serialization, ForkID BIP143 and Chronicle OTDA preimages. Each project chooses its scriptCode and signing algorithm.
+- `evaluate.py`: local development evaluator for the generated opcode subset. It does not implement consensus flags, resource limits or network activation. Use a native CHECKSIG callback for signature opcodes.
+- `verify_node.sh`: BSV Node 1.2.3 download/checksum verification and temporary regtest RPC validation. Run from a project's reference directory with its unittest module name. Projects retain their own chain-gang tests.
+- `test_layout.py`: project-resource links and unchanged R1 template vectors.
 
-`evaluate.py` is **not a consensus engine**: it does not model activation,
-resource limits, all Script opcodes, or native transaction checks. Use the pinned
-chain-gang engine and `verify_node.sh` for complete-input conformance.
-
-`transaction.preimage_all` defaults to scriptCode `ac`, suitable only for templates
-whose final executed code separator leaves exactly `OP_CHECKSIG`. Funding data
-must be authenticated by the caller. None of these helpers manages wallet state.
+Cryptographic parameters, identity policy, witness format and authorization coverage belong to each project. This directory is not a new consensus engine.

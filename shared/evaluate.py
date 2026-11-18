@@ -47,6 +47,7 @@ def evaluate(raw, stack=None, checksig=None):
             elif name=='2DUP': stack.extend(stack[-2:])
             elif name=='3DUP': stack.extend(stack[-3:])
             elif name=='OVER': stack.append(stack[-2])
+            elif name=='2SWAP': stack[-4:]=stack[-2:]+stack[-4:-2]
             elif name=='SWAP': stack[-2:]=stack[-2:][::-1]
             elif name=='ROT': stack.append(stack.pop(-3))
             elif name=='TUCK': stack.insert(len(stack)-2,stack[-1])

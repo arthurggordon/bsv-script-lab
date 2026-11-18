@@ -15,7 +15,7 @@
 3. 识别时先核对原始脚本长度及开头十字节 `760052a569766b7c8201`。提取该区间后，要求 `SHA256(raw[:208] || raw[228:])` 等于 `2129d374594069d08a9b2127555f48ea21c75fb06d1ad5e77c68ad251e97f784`，才可报告类型和收款哈希。输入从第一个 opcode 开始。字段是公钥哈希，完整公钥在花费时揭示。[模板字节](../template/template.hex) · [布局及三个互操作向量](../template/layout.json) · [字节匹配与生成函数](../reference/p2pkh_r1.py)
 
 ```sh
-cd reference
+cd projects/p2pkh-r1/reference
 python generate_lock.py --owner-hash160 4ceab2c8be16c1d4c6b4147d39aa449c2d63f184 --format raw > scriptPubKey.bin
 ```
 

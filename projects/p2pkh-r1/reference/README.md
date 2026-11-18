@@ -5,7 +5,7 @@ The wallet uses the exact script bytes in [the canonical template](../template/t
 Use Python 3.12 on Linux x86-64 with Git and a Rust toolchain available to build the pinned Python extension. Install the dependencies from requirements.txt before running the node comparison. It pins tx-engine to [5cb8c6e410](https://github.com/linzhm/chain-gang/commit/5cb8c6e410dbfad1c619cec3ca54d1bcaacd4eb7) from the fork's `fix/otda-complete-validation` branch. CI checks the installed Git commit before executing the full-input tests. [Conformance run](https://github.com/linzhm/bsv-script-lab/actions/runs/44392715745) The ordinary TypeScript, Rust and Go SDKs are independent of this dependency.
 
 ```sh
-cd reference
+cd projects/p2pkh-r1/reference
 python -m pip install -r requirements.txt
 python generate_lock.py --owner-hash160 4ceab2c8be16c1d4c6b4147d39aa449c2d63f184
 bash verify.sh

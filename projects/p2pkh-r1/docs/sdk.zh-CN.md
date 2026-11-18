@@ -34,9 +34,9 @@
 先用 [spend-all.json](../template/spend-all.json) 内的签名替代真实设备。回调收到的摘要须等于 digest_hex，返回 signature_hex。三个 SDK 必须产生向量中的解锁脚本及已签 txid。然后将同一个回调换成设备接口，让设备对指定摘要签名。设备生成另一份有效签名时，签名和 txid 可以不同。对 DER 签名先解析两个正整数，再填充为两个大端 32 字节数。若设备接口会自行做一次 SHA-256，适配层须使用支持相应消息输入的接口；绝不能将 SDK 给出的双哈希摘要再交给自动哈希的消息签名接口。
 
 ```sh
-(cd sdk/typescript && npm install && npm run check && npm test)
-(cd sdk/rust && cargo test)
-(cd sdk/go && go test ./...)
+(cd projects/p2pkh-r1/sdk/typescript && npm install && npm run check && npm test)
+(cd projects/p2pkh-r1/sdk/rust && cargo test)
+(cd projects/p2pkh-r1/sdk/go && go test ./...)
 ```
 
 三个包的测试覆盖 A/B/C 模板向量、公开点验证、固定字节变动、截断、追加以及普通付款签名回放、错误签名和错误手续费。测试不需要设备、网络节点或私钥。初次安装工具或依赖需要网络。完整节点差异测试见 [reference](../reference/README.md)。

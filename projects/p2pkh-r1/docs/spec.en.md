@@ -15,7 +15,7 @@ For example, an ordinary P2PKH payment can create an R1 output for Alice. When A
 3. For recognition, check the length and ten-byte prefix `760052a569766b7c8201`. Extract the candidate owner hash. Require `SHA256(raw[:208] || raw[228:])` to equal `2129d374594069d08a9b2127555f48ea21c75fb06d1ad5e77c68ad251e97f784` before returning the type and hash. Byte zero is the first opcode. The public key itself is revealed on spend. [Canonical bytes](../template/template.hex) · [Layout and three vectors](../template/layout.json) · [Byte matcher and generator](../reference/p2pkh_r1.py)
 
 ```sh
-cd reference
+cd projects/p2pkh-r1/reference
 python generate_lock.py --owner-hash160 4ceab2c8be16c1d4c6b4147d39aa449c2d63f184 --format raw > scriptPubKey.bin
 ```
 
