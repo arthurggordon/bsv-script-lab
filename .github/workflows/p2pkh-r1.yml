@@ -1,0 +1,39 @@
+name: P2PKH-R1 conformance
+on:
+  push:
+    branches: [research/pels-transaction-bounds]
+    paths: ['sdk/**', 'reference/**', 'template/**', '.github/workflows/p2pkh-r1.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: TypeScript vectors
+        working-directory: sdk/typescript
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund
+          npm run check
+          npm test
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: false
+      - name: Go vectors
+        working-directory: sdk/go
+        run: |
+          go mod download golang.org/x/crypto
+          go test ./...
+      - name: Rust vectors
+        working-directory: sdk/rust
+        run: cargo test
