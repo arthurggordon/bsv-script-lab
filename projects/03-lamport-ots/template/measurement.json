@@ -1,0 +1,62 @@
+{
+  "scope": "Local wall-clock, warmup=3; includes Python adapter overhead; not miner throughput or network fee",
+  "platform": "macOS-27.2.1-arm64-arm-64bit",
+  "machine": "arm64",
+  "python": "3.12.16",
+  "iterations": 30,
+  "sizes": {
+    "secret_key_bytes": 16384,
+    "public_key_bytes": 16384,
+    "signature_bytes": 8192,
+    "digest_verifier_bytes_including_key": 21876,
+    "locking_script_bytes_including_key": 22491,
+    "locking_non_key_bytes_including_push_headers": 6107,
+    "binding_tail_bytes": 587,
+    "unlocking_script_bytes": 8355,
+    "total_lock_and_unlock_bytes": 30846,
+    "signed_one_input_one_OP_TRUE_output_tx_bytes": 8418,
+    "locking_instructions_including_pushes_and_both_branches": 5634,
+    "locking_non_push_opcodes_including_both_branches": 4207,
+    "sha256_opcodes": 256,
+    "hash256_opcodes": 1,
+    "checksig_opcodes": 1
+  },
+  "development_stack_peaks_for_fixture": {
+    "main_items": 5,
+    "alt_items": 32,
+    "combined_items": 33,
+    "combined_payload_bytes": 8512
+  },
+  "timings": {
+    "keygen_including_public_hashes": {
+      "median_ms": 0.269583,
+      "min_ms": 0.263834,
+      "max_ms": 0.305041
+    },
+    "sign_digest_stateless": {
+      "median_ms": 0.044708,
+      "min_ms": 0.043833,
+      "max_ms": 0.049125
+    },
+    "verify_digest": {
+      "median_ms": 0.153583,
+      "min_ms": 0.148625,
+      "max_ms": 0.198209
+    },
+    "generate_locking_script": {
+      "median_ms": 1.471395,
+      "min_ms": 1.446916,
+      "max_ms": 1.640667
+    },
+    "development_full_script_with_python_ecdsa": {
+      "median_ms": 4.249521,
+      "min_ms": 4.137292,
+      "max_ms": 4.740792
+    },
+    "chain_gang_complete_transaction": {
+      "median_ms": 0.293208,
+      "min_ms": 0.281208,
+      "max_ms": 0.353291
+    }
+  }
+}
