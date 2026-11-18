@@ -4,45 +4,44 @@ import os
 from pathlib import Path
 import unittest
 import requests
-from tx_engine import Script,Tx,TxIn,TxOut
-from test_sm2 import fixture,ROOT
+from test_sm2 import fixture
+from test_sighash import chain_check, mode_cases, activation_cases
 from p2pkh_sm2 import *
 from sm2 import *
 from shared.script import push
 
 
-def engine_script(raw):
-    script=Script(); script.append_data(raw); return script
-
-
-def engine_tx(tx):
-    return Tx(tx.version,[TxIn(x.txid[::-1].hex(),x.vout,engine_script(x.script),x.sequence) for x in tx.inputs],
-              [TxOut(x.value,engine_script(x.script)) for x in tx.outputs],tx.locktime)
-
-
-def check(tx,parents,index,valid=True):
+def check_node(tx, parents, index, valid=True, *, chronicle_active=True, old_output=False):
     previous=parents[index].outputs[tx.inputs[index].vout]
     cookie=Path(os.environ['REGTEST_COOKIE']).read_text().strip().split(':',1)
-    flags=sum(1<<b for b in (1,2,3,16,18,19,20,21))
+    flags = sum(1 << b for b in (1,2,3,16,18,19))
+    if chronicle_active:
+        flags |= 1 << 20
+        if not old_output:
+            flags |= 1 << 21
     request=dict(tx=tx.serialize().hex(),n=index,flags=flags,reportflags=True,
-                 txo=dict(lock=previous.script.hex(),value=previous.value,height=3))
+                 txo=dict(lock=previous.script.hex(),value=previous.value,height=3 if chronicle_active and not old_output else 1))
     response=requests.post('http://127.0.0.1:18443',auth=tuple(cookie),timeout=30,
         json=dict(jsonrpc='1.0',id=1,method='verifyscript',params=[[request],False,5000]))
     response.raise_for_status(); data=response.json()
     if data.get('error'): raise AssertionError(data['error'])
     result=data['result'][0]
-    if result['result']!=('ok' if valid else 'error') or result['flags']&flags!=flags:
+    if result['result']!=('ok' if valid else 'error') or result['flags']!=flags:
         raise AssertionError((valid,result))
-    converted=engine_tx(tx)
-    if converted.serialize()!=tx.serialize(): raise AssertionError('transaction serializer mismatch')
-    try:
-        converted.validate([engine_tx(p) for p in parents])
-        accepted=True
-    except ValueError: accepted=False
-    if accepted!=valid: raise AssertionError(('chain-gang result',accepted,valid))
+
+
+def check(tx, parents, index, valid=True):
+    check_node(tx, parents, index, valid)
+    chain_check(tx, parents, index, valid)
 
 
 class NodeTests(unittest.TestCase):
+    def test_sighash_coverage(self):
+        mode_cases(check_node)
+
+    def test_chronicle_flags(self):
+        activation_cases(check_node)
+
     def test_consecutive_payments(self):
         qa=encode_public(mul(1)); qb=encode_public(mul(7))
         la=locking_script_from_public_key(qa); lb=locking_script_from_public_key(qb)

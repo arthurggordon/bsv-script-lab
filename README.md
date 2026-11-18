@@ -9,7 +9,8 @@ BSV 上 Bitcoin Script 的公开实验仓库。每个项目独立维护协议规
 | Project | Authorization | Resources | Status |
 |---|---|---|---|
 | [P2PKH-R1](projects/p2pkh-r1/README.md) | secp256r1 / P-256 ECDSA | TypeScript, Rust, Go SDKs; Python reference; ForkID and OTDA | Developer RFC |
-| [P2PKH-SM2](projects/p2pkh-sm2/README.md) | curveSM2 + SM3 + ZA | Python payment API; generated Bitcoin Script; standard and payment vectors | Experimental v1; ForkID ALL |
+| [P2PKH-SM2](projects/p2pkh-sm2/README.md) | curveSM2 + SM3 + ZA | Python payment API; generated Bitcoin Script; standard and payment vectors | Experimental v2 · six ForkID and six Chronicle OTDA modes |
+| [Lamport OTS (SHA-256)](projects/03-lamport-ots/README.md) | Hash-based one-time authorization | Python reference; unrolled BSV Script; BIP143 and Chronicle OTDA | Experimental; one key / one UTXO |
 
 P2PKH-SM2 是第二个项目：付款方只需收款方公钥哈希即可创建输出；收款方使用 SM2 签名授权当前花费。链上脚本执行 SM3、ZA 和 SM2 验签，通过原生 secp256k1 `OP_CHECKSIG` 的公开 PUSHTX 构造绑定当前交易。
 

@@ -1,4 +1,4 @@
-# P2PKH-SM2 v1
+# P2PKH-SM2 v2
 
 Experimental specification · BRC number unassigned · [中文](spec.zh-CN.md)
 
@@ -24,31 +24,43 @@ The curve, public-key check and signature equation are those of SM2, not P-256 E
 
 ## Transaction scope and bytes
 
-v1 fixes `SIGHASH_ALL | SIGHASH_FORKID` (`0x41`). It can authorize an input of a multi-input, multi-output transaction. The convenience payment API builds a single-input payment with one or more outputs. NONE, SINGLE, ANYONECANPAY and OTDA are outside this version.
+Each input selects a base mode, optional ANYONECANPAY (ACP), and digest algorithm. The BSV fork value in the upper 24 bits is zero. All twelve types set the ForkID bit. Chronicle permits the additional OTDA bit `0x20` at spend time, including when the spent output predates Chronicle.
 
-The program ends with `OP_CODESEPARATOR OP_CHECKSIG`. The scriptCode is `ac`, serialized as `01ac`. P is exactly 158 bytes:
+| Output coverage | BIP143 | BIP143 + ACP | Chronicle OTDA | OTDA + ACP |
+|---|---|---|---|---|
+| ALL | `41` | `c1` | `61` | `e1` |
+| NONE | `42` | `c2` | `62` | `e2` |
+| SINGLE | `43` | `c3` | `63` | `e3` |
+
+ALL covers every output. NONE leaves outputs open. Paired SINGLE covers the output with the current input's index. Without ACP all input outpoints are covered. Only ALL without ACP covers the other inputs’ sequences. Every owner authorization binds the current outpoint, current sequence, version and locktime.
+
+Ordinary checks execute after the final `OP_CODESEPARATOR`, giving scriptCode `ac`. BIP143 includes the previous amount. Its 158-byte preimage is:
 
 ```text
 versionLE32 || hashPrevouts || hashSequence || outpoint || 01ac ||
-amountLE64 || sequenceLE32 || hashOutputs || locktimeLE32 || 41000000
+amountLE64 || sequenceLE32 || hashOutputs || locktimeLE32 || typeLE32
 ```
 
-The native check binds the owner's approved H to the actual current input, previous amount and transaction coverage. Its public signature construction is not an owner authorization by itself. The node obtains the previous amount and lock from the UTXO context; an earlier full transaction is only wallet-side evidence. This reference does not implement header-chain or Merkle-proof validation.
+OTDA serializes the selected inputs and outputs in the original format and appends the four-byte type. It omits the spent amount. Under paired SINGLE, each earlier output is a null placeholder (`ffffffffffffffff00`), including with ACP. No complete parent transaction enters the witness.
+
+**Unpaired SINGLE.** BIP143 uses zero hashOutputs. Native OTDA instead returns the constant `uint256(1)`; that digest alone carries no transaction authorization. For `63` or `e3`, the SM2 owner signs the BIP143 SINGLE companion (`43` or `c3`). Its scriptCode is `ad68abac`, including the unexecuted separator. The lock checks the companion’s zero hashOutputs, verifies its native binding against the actual input and separately checks the original OTDA type against the native constant. Adding a paired output or changing the current outpoint invalidates this authorization. With ACP other inputs can still change.
 
 | Item | Encoding |
 |---|---|
-| Lock | 199,530 bytes |
-| Owner slot | zero-based `[50,70)` |
-| Witness item 1 | push(P), 160 serialized bytes |
-| Witness item 2 | push(Q), 66 serialized bytes |
-| Witness item 3 | push(r_BE32 || s_BE32), 65 serialized bytes |
-| Complete scriptSig | 291 bytes, exactly three items |
+| v2 lock / owner slot | 199,777 bytes / zero-based `[168,188)` |
+| Three witness items | preimage P, uncompressed key Q (65 bytes), raw r‖s (64 bytes) |
+| BIP143 scriptSig | 291 bytes |
+| Ordinary OTDA scriptSig | `len(push(P)) + 131` bytes, transaction-dependent |
+| Unpaired OTDA SINGLE scriptSig | 294 bytes (161-byte companion P) |
+| Existing v1 output | 199,530-byte lock, owner at `[50,70)`, spendable with `41` |
 
 Recognition checks all fixed program bytes. [The layout](../template/layout.json) pins the length, owner offset, zero-owner program hash and fixed-byte fingerprint. Generate raw bytes with [generate_lock.py](../reference/generate_lock.py). Expanded hex is deliberately reproducible rather than duplicated in source control.
 
 ## Integration
 
-[The Python API](../reference/p2pkh_sm2.py) exports output generation from a hash or validated public key, full-template recognition, `current_input_unlock`, and `sign_payment`. The payment helper validates the funding output, key, outputs and explicit fee, calls `signer(H, IDA)`, verifies its returned raw signature and serializes the spend.
+[The Python API](../reference/p2pkh_sm2.py) exports output generation from a hash or validated public key, full-template recognition (`identify` returns version and owner), `current_input_unlock`, `sign_input`, and `sign_payment`. The payment helper validates the funding output, key, outputs and explicit fee, calls `signer(H, IDA)`, verifies its returned raw signature and serializes the spend.
+
+`sign_payment` uses `0x41`. For a prepared transaction, call `sign_input(tx, index, funding_raw, key, signer, sighash_type, chronicle_active=active)`. The wallet matches the funding outpoint and signs only that input. `chronicle_active` defaults to `True`; callers handling pre-activation spends must supply `False`. The wallet rejects OTDA before invoking the signer in that context, and restricts v1 to `0x41` in all contexts. [Mode vectors](../template/sighash-modes.json) cover all twelve paired modes and four unpaired SINGLE cases.
 
 The caller authenticates the funding transaction and confirmation state and obtains approval of recipients, change and fees. Secret-key signing belongs in an external signer. The pure-Python arithmetic and explicit-nonce fixture signer are not constant-time production signing implementations. The identity string is an algorithm input; it is not identity certification or X.509 validation.
 
