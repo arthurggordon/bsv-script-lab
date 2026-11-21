@@ -2,7 +2,7 @@
 
 [BSV Script Lab](../../README.md) · Deferred P-256 payment template / 延迟启用的 R1 付款模板
 
-A 1,480-byte funding script publishes the recipient's uncompressed P-256 public key and target script hash. It commits to the complete P2PKH-R1 output created at activation. The same short lock supports Genesis ForkID and Chronicle OTDA, with 160-byte direct and 197-byte two-check unlocking scripts. The resulting output uses ordinary [P2PKH-R1](../p2pkh-r1/README.md) authorization.
+A 1,435-byte funding script publishes the recipient's P-256 public key HASH160 and target script SHA-256. It commits to the complete P2PKH-R1 output created at activation. The same short lock supports Genesis ForkID and Chronicle OTDA, with 160-byte direct and 197-byte two-check unlocking scripts. The resulting output uses ordinary [P2PKH-R1](../p2pkh-r1/README.md) authorization.
 
 短锁公开收款人的 R1 公钥和目标脚本哈希，便于钱包筛选并核对收款。启用时只能创建承诺的同索引输出。收款人随后使用原有 R1 钱包授权花费。
 

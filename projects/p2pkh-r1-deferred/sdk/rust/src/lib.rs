@@ -1,21 +1,22 @@
 //! Construct and recognize canonical P2PKH-R1-Deferred raw scriptPubKeys.
 use sha2::{Digest, Sha256};
 
-const FIELDS: [(usize, usize); 4] = [(1, 66), (67, 99), (154, 162), (179, 211)];
+const FIELDS: [(usize, usize); 4] = [(1, 21), (22, 54), (109, 117), (134, 166)];
 const FINGERPRINT: [u8; 32] = [
-    0xf7, 0x3e, 0x2c, 0x43, 0xca, 0xbf, 0x95, 0x93, 0x85, 0x29, 0xd8, 0x98, 0x02, 0xb8, 0xcb, 0xea,
-    0x95, 0x79, 0x32, 0xc5, 0x1b, 0x13, 0xa3, 0x26, 0x52, 0x61, 0xa5, 0x08, 0x7c, 0x1c, 0x31, 0x6d,
+    0xc8, 0x1b, 0x70, 0xf5, 0x9e, 0x00, 0x40, 0x2f, 0xb3, 0xcd, 0x93, 0x6d, 0x17, 0x4e, 0x7c, 0x8a,
+    0x45, 0xeb, 0x82, 0x05, 0xa1, 0x8b, 0x3a, 0xd4, 0x3f, 0xac, 0x29, 0xe9, 0x3f, 0x58, 0xcc, 0xb4,
 ];
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Commitment {
-    pub public_key: [u8; 65],
+    pub owner_hash160: [u8; 20],
+    pub public_key: Option<[u8; 65]>,
     pub target_script_sha256: [u8; 32],
     pub target_txout_hash256: [u8; 32],
 }
 
 fn canonical(script: &[u8]) -> bool {
-    let Ok(mut fixed) = <[u8; 1480]>::try_from(script) else {
+    let Ok(mut fixed) = <[u8; 1435]>::try_from(script) else {
         return false;
     };
     for (start, end) in FIELDS {
@@ -24,45 +25,88 @@ fn canonical(script: &[u8]) -> bool {
     Sha256::digest(fixed)[..] == FINGERPRINT
 }
 
+fn is_legacy(script: &[u8]) -> bool {
+    script.len() == 1480 && script.starts_with(&[65, 4])
+}
+
+fn compact_template(template: &[u8], owner: &[u8; 20]) -> Vec<u8> {
+    if is_legacy(template) {
+        let mut script = Vec::with_capacity(1435);
+        script.push(20);
+        script.extend_from_slice(owner);
+        script.extend_from_slice(&template[66..]);
+        return script;
+    }
+    template.to_vec()
+}
+
+fn build_lock(
+    template: &[u8],
+    target: &[u8],
+    owner: &[u8; 20],
+    satoshis: u64,
+) -> Result<Vec<u8>, &'static str> {
+    let mut script = compact_template(template, owner);
+    if !canonical(&script) {
+        return Err("unrecognized deferred template");
+    }
+    if satoshis > 2_100_000_000_000_000 {
+        return Err("invalid amount");
+    }
+    let mut output_hash = Sha256::new();
+    output_hash.update(satoshis.to_le_bytes());
+    output_hash.update([0xfd]);
+    output_hash.update((target.len() as u16).to_le_bytes());
+    output_hash.update(target);
+    let output_hash = Sha256::digest(output_hash.finalize());
+    if output_hash[..] == [0; 32] {
+        return Err("zero target commitment");
+    }
+    script[1..21].copy_from_slice(owner);
+    script[22..54].copy_from_slice(&Sha256::digest(target));
+    script[109..117].copy_from_slice(&satoshis.to_le_bytes());
+    script[134..166].copy_from_slice(&output_hash);
+    Ok(script)
+}
+
+pub fn lock_for_owner(
+    template: &[u8],
+    r1_template: &[u8],
+    owner: &[u8; 20],
+    satoshis: u64,
+) -> Result<Vec<u8>, &'static str> {
+    let target = p2pkh_r1::lock_for_owner(r1_template, owner)?;
+    build_lock(template, &target, owner, satoshis)
+}
+
 pub fn lock_for_key(
     template: &[u8],
     r1_template: &[u8],
     public_key: &[u8],
     satoshis: u64,
 ) -> Result<Vec<u8>, &'static str> {
-    if !canonical(template) {
-        return Err("unrecognized deferred template");
-    }
-    if satoshis > 2_100_000_000_000_000 {
-        return Err("invalid amount");
-    }
     let target = p2pkh_r1::lock_for_key(r1_template, public_key)?;
-    let mut output_hash = Sha256::new();
-    output_hash.update(satoshis.to_le_bytes());
-    output_hash.update([0xfd]);
-    output_hash.update((target.len() as u16).to_le_bytes());
-    output_hash.update(&target);
-    let output_hash = Sha256::digest(output_hash.finalize());
-    if output_hash[..] == [0; 32] {
-        return Err("zero target commitment");
-    }
-    let mut script = template.to_vec();
-    script[1..66].copy_from_slice(public_key);
-    script[67..99].copy_from_slice(&Sha256::digest(target));
-    script[154..162].copy_from_slice(&satoshis.to_le_bytes());
-    script[179..211].copy_from_slice(&output_hash);
-    Ok(script)
+    let owner = p2pkh_r1::recognize(&target).ok_or("unrecognized target R1 lock")?;
+    build_lock(template, &target, &owner, satoshis)
 }
 
 pub fn recognize(r1_template: &[u8], script: &[u8], satoshis: u64) -> Option<Commitment> {
-    let public_key: [u8; 65] = script.get(1..66)?.try_into().ok()?;
-    if lock_for_key(script, r1_template, &public_key, satoshis).ok()? != script {
+    let (owner_hash160, public_key) = if is_legacy(script) {
+        let key: [u8; 65] = script[1..66].try_into().ok()?;
+        let target = p2pkh_r1::lock_for_key(r1_template, &key).ok()?;
+        (p2pkh_r1::recognize(&target)?, Some(key))
+    } else {
+        (script.get(1..21)?.try_into().ok()?, None)
+    };
+    let compact = compact_template(script, &owner_hash160);
+    if lock_for_owner(&compact, r1_template, &owner_hash160, satoshis).ok()? != compact {
         return None;
     }
     Some(Commitment {
+        owner_hash160,
         public_key,
-        target_script_sha256: script[67..99].try_into().ok()?,
-        target_txout_hash256: script[179..211].try_into().ok()?,
+        target_script_sha256: compact[22..54].try_into().ok()?,
+        target_txout_hash256: compact[134..166].try_into().ok()?,
     })
 }
 

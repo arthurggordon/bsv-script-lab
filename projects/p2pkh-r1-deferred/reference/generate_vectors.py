@@ -10,14 +10,15 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from deferred import activate_input, activation_preimages, funding_output, recognize, target_output
+from shared.script import push
 from shared.transaction import CHRONICLE, SIGHASH_TYPES, Input, Transaction
 
 TEMPLATE = Path(__file__).resolve().parents[1] / 'template'
 FIELDS = {
-    'public_key_x963': (1, 65),
-    'target_script_sha256': (67, 32),
-    'input_value_le64': (154, 8),
-    'target_txout_hash256': (179, 32),
+    'owner_hash160': (1, 20),
+    'target_script_sha256': (22, 32),
+    'input_value_le64': (109, 8),
+    'target_txout_hash256': (134, 32),
 }
 
 
@@ -35,9 +36,12 @@ def artifacts():
         public_key = key.public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
         output = funding_output(value, public_key)
         commitment = recognize(output)
+        legacy = push(public_key) + output.script[21:]
         vectors.append(dict(id=scalar, value_sats=value, public_key_x963=public_key.hex(),
+                            owner_hash160=commitment.owner_hash160.hex(),
                             target_script_sha256=commitment.script_hash.hex(),
                             target_txout_hash256=commitment.output_hash.hex(),
+                            legacy_locking_script_sha256=sha256(legacy).hexdigest(),
                             locking_script_sha256=sha256(output.script).hexdigest()))
         if scalar == 1:
             base = output.script

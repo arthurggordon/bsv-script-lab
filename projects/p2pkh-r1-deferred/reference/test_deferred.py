@@ -10,12 +10,14 @@ from cryptography.hazmat.primitives.asymmetric import ec, utils
 from tx_engine import Script, Tx, TxIn, TxOut
 
 from deferred import (
-    ACTIVATION_SIGHASH, DIRECT_TYPES, SCRIPT_CODE, activate_input, funding_output, recognize, target_output,
+    ACTIVATION_SIGHASH, DIRECT_TYPES, SCRIPT_CODE, activate_input, funding_output,
+    funding_output_from_owner_hash, recognize, target_output, target_output_from_owner_hash,
 )
 from generate_vectors import TEMPLATE, artifacts
 from shared.script import asm, push
 from shared.transaction import CHRONICLE, SIGHASH_TYPES, Input, Output, Transaction, hash256, preimage_forkid
 from wallet import sign_payment
+from p2pkh_r1 import public_key_hash160
 
 
 def fixture_key(scalar):
@@ -115,20 +117,37 @@ class DeferredTests(unittest.TestCase):
         output = funding.outputs[0]
         commitment = recognize(output, expected_key=public_key)
         self.assertIsNotNone(commitment)
-        self.assertEqual(commitment.public_key, public_key)
+        owner_hash = public_key_hash160(public_key)
+        self.assertEqual(commitment.owner_hash160, owner_hash)
+        self.assertIsNone(commitment.public_key)
+        self.assertEqual(funding_output_from_owner_hash(output.value, owner_hash), output)
+        self.assertEqual(target_output_from_owner_hash(output.value, owner_hash), unsigned.outputs[0])
+        self.assertEqual(recognize(output, expected_owner_hash=owner_hash), commitment)
         self.assertEqual(commitment.script_hash, sha256(unsigned.outputs[0].script).digest())
         self.assertEqual(commitment.output_hash, hash256(unsigned.outputs[0].serialize()))
-        self.assertEqual(output.script[1:66], public_key)
-        self.assertEqual(output.script[67:99], commitment.script_hash)
-        self.assertEqual(len(output.script), 1480)
+        self.assertEqual(output.script[1:21], owner_hash)
+        self.assertEqual(output.script[22:54], commitment.script_hash)
+        self.assertNotIn(public_key, output.script)
+        self.assertEqual(len(output.script), 1435)
         self.assertIsNone(recognize(output, expected_key=second_key))
         self.assertIsNone(recognize(replace(output, value=output.value + 1)))
-        for offset in (0, 1, 67, 99, output.script.index(commitment.output_hash)):
+        for offset in (0, 1, 22, 54, output.script.index(commitment.output_hash)):
             raw = bytearray(output.script)
             raw[offset] ^= 1
             self.assertIsNone(recognize(replace(output, script=bytes(raw))))
         with self.assertRaises(ValueError):
             funding_output(output.value, b'\x04' + bytes(64))
+
+    def test_legacy_full_key_output_is_recognized_and_activates(self):
+        _, public_key, _, funding, unsigned = fixture()
+        output = funding.outputs[0]
+        raw = push(public_key) + output.script[21:]
+        self.assertEqual(sha256(raw).hexdigest(), 'e606096dc6008a9b0c4bbe082aebeaf480aa4c6277c78400469c7acce9dbfbe7')
+        previous = replace(output, script=raw)
+        self.assertEqual(recognize(previous, expected_key=public_key).public_key, public_key)
+        original = replace(funding, outputs=(previous, *funding.outputs[1:]))
+        tx = replace(unsigned, inputs=tuple(replace(i, txid=original.txid_wire()) for i in unsigned.inputs))
+        engine_tx(activation_fixture(original, tx)).validate([engine_tx(original)])
 
     def test_preflight_rejects_mismatch(self):
         _, _, _, funding, unsigned = fixture()

@@ -1,9 +1,9 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { lockForKey as r1LockForKey } from "../../../p2pkh-r1/sdk/typescript/index.ts";
+import { lockForKey as r1LockForKey, lockForOwner as r1LockForOwner, recognize as r1Recognize } from "../../../p2pkh-r1/sdk/typescript/index.ts";
 
-const fields = [[1, 66], [67, 99], [154, 162], [179, 211]] as const;
-const fingerprint = "f73e2c43cabf95938529d89802b8cbea957932c51b13a3265261a5087c1c316d";
+const fields = [[1, 21], [22, 54], [109, 117], [134, 166]] as const;
+const fingerprint = "c81b70f59e00402fb3cd936d174e7c8a45eb8205a18b3ad43fac29e93f58ccb4";
 const zero = Buffer.alloc(32);
 
 function sha256(bytes: Uint8Array): Buffer {
@@ -11,47 +11,74 @@ function sha256(bytes: Uint8Array): Buffer {
 }
 
 function canonical(script: Uint8Array): boolean {
-  if (script.length !== 1480) return false;
+  if (script.length !== 1435) return false;
   const fixed = Buffer.from(script);
   for (const [start, end] of fields) fixed.fill(0, start, end);
   return sha256(fixed).toString("hex") === fingerprint;
 }
 
-export function lockForKey(template: Uint8Array, r1Template: Uint8Array,
-  publicKey: Uint8Array, satoshis: bigint): Buffer {
-  if (!canonical(template)) throw new Error("unrecognized deferred template");
+function isLegacy(script: Uint8Array): boolean {
+  return script.length === 1480 && script[0] === 65 && script[1] === 4;
+}
+
+function compactTemplate(template: Uint8Array, ownerHash160: Uint8Array): Buffer {
+  return isLegacy(template)
+    ? Buffer.concat([Buffer.from([20]), ownerHash160, template.subarray(66)])
+    : Buffer.from(template);
+}
+
+function buildLock(template: Uint8Array, target: Uint8Array, ownerHash160: Uint8Array, satoshis: bigint): Buffer {
+  const script = compactTemplate(template, ownerHash160);
+  if (!canonical(script)) throw new Error("unrecognized deferred template");
   if (satoshis < 0n || satoshis > 2_100_000_000_000_000n) throw new RangeError("invalid amount");
-  const target = r1LockForKey(r1Template, publicKey);
   const header = Buffer.alloc(11);
   header.writeBigUInt64LE(satoshis);
   header[8] = 0xfd;
   header.writeUInt16LE(target.length, 9);
   const outputHash = sha256(sha256(Buffer.concat([header, target])));
   if (outputHash.equals(zero)) throw new Error("zero target commitment");
-  const script = Buffer.from(template);
-  script.set(publicKey, 1);
-  script.set(sha256(target), 67);
-  script.set(header.subarray(0, 8), 154);
-  script.set(outputHash, 179);
+  script.set(ownerHash160, 1);
+  script.set(sha256(target), 22);
+  script.set(header.subarray(0, 8), 109);
+  script.set(outputHash, 134);
   return script;
 }
 
+export function lockForOwner(template: Uint8Array, r1Template: Uint8Array,
+  ownerHash160: Uint8Array, satoshis: bigint): Buffer {
+  return buildLock(template, r1LockForOwner(r1Template, ownerHash160), ownerHash160, satoshis);
+}
+
+export function lockForKey(template: Uint8Array, r1Template: Uint8Array,
+  publicKey: Uint8Array, satoshis: bigint): Buffer {
+  const target = r1LockForKey(r1Template, publicKey);
+  const owner = r1Recognize(target);
+  if (!owner) throw new Error("unrecognized target R1 lock");
+  return buildLock(template, target, owner, satoshis);
+}
+
 export interface Commitment {
-  publicKey: Buffer;
+  ownerHash160: Buffer;
+  /** Present only if the previous output disclosed a full public key. */
+  publicKey?: Buffer;
   targetScriptSha256: Buffer;
   targetTxOutHash256: Buffer;
 }
 
 export function recognize(r1Template: Uint8Array, rawScript: Uint8Array,
   satoshis: bigint): Commitment | null {
-  const script = Buffer.from(rawScript);
-  const publicKey = script.subarray(1, 66);
   try {
-    if (!lockForKey(script, r1Template, publicKey, satoshis).equals(script)) return null;
+    const script = Buffer.from(rawScript);
+    const publicKey = isLegacy(script) ? script.subarray(1, 66) : undefined;
+    const ownerHash160 = publicKey ? r1Recognize(r1LockForKey(r1Template, publicKey)) : script.subarray(1, 21);
+    if (!ownerHash160) return null;
+    const compact = compactTemplate(script, ownerHash160);
+    if (!lockForOwner(compact, r1Template, ownerHash160, satoshis).equals(compact)) return null;
+    return {ownerHash160, publicKey, targetScriptSha256: compact.subarray(22, 54),
+      targetTxOutHash256: compact.subarray(134, 166)};
   } catch {
     return null;
   }
-  return {publicKey, targetScriptSha256: script.subarray(67, 99), targetTxOutHash256: script.subarray(179, 211)};
 }
 
 /** Encode the paired output preimage and optional type byte plus selected transaction digest. */

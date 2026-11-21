@@ -2,7 +2,7 @@ block IS_FORKID_SINGLE
   OP_DUP 0x43 OP_EQUAL OP_SWAP 0xc3 OP_EQUAL OP_BOOLOR
 end
 
-# The header publishes the R1 public key and target script hash.
+# The header publishes the R1 owner hash and target script hash.
 block LOCK
   @HEADER OP_2DROP
   OP_DEPTH OP_DUP OP_1 OP_3 OP_WITHIN OP_VERIFY

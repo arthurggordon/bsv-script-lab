@@ -13,10 +13,11 @@ from shared.transaction import (
 
 R1_REFERENCE = Path(__file__).resolve().parents[2] / 'p2pkh-r1/reference'
 sys.path.append(str(R1_REFERENCE))
-from p2pkh_r1 import locking_script_from_public_key
+from p2pkh_r1 import locking_script_from_owner_hash, public_key_hash160
 
 
 PUBLIC_KEY_SIZE = 65
+OWNER_HASH_SIZE = 20
 SCRIPT_CODE = bytes([OPS['OP_CHECKSIG']])
 COMPANION_CODE = bytes(OPS[name] for name in ('OP_CHECKSIGVERIFY', 'OP_ENDIF', 'OP_CODESEPARATOR', 'OP_CHECKSIG'))
 ACTIVATION_SIGHASH = FORKID | SIGHASH_SINGLE
@@ -26,15 +27,20 @@ ASM = Path(__file__).with_name('asm')
 
 @dataclass(frozen=True)
 class Commitment:
-    public_key: bytes
+    owner_hash160: bytes
     script_hash: bytes
     output_hash: bytes
+    public_key: bytes | None = None
 
 
 def target_output(value: int, public_key: bytes) -> Output:
     """Return the canonical P2PKH-R1 destination at the full input value."""
+    return target_output_from_owner_hash(value, public_key_hash160(public_key))
+
+
+def target_output_from_owner_hash(value: int, owner_hash160: bytes) -> Output:
     amount(value)
-    return Output(value, locking_script_from_public_key(public_key))
+    return Output(value, locking_script_from_owner_hash(owner_hash160))
 
 
 @cache
@@ -48,34 +54,50 @@ def _binder_blocks() -> dict[str, bytes]:
 def _locking_script(value: int, commitment: Commitment) -> bytes:
     return assemble(ASM, bytes(20), injected={
         **_binder_blocks(),
-        'HEADER': push(commitment.public_key) + push(commitment.script_hash),
+        'HEADER': push(commitment.public_key or commitment.owner_hash160) + push(commitment.script_hash),
         'VALUE': push(amount(value)),
         'TARGET_HASH': push(commitment.output_hash),
     })
 
 
-def _commitment(public_key: bytes, target: Output) -> Commitment:
+def _commitment(owner_hash160: bytes, target: Output, public_key: bytes | None = None) -> Commitment:
     output_hash = hash256(target.serialize())
     if output_hash == bytes(32):
         raise ValueError('zero target commitment')
-    return Commitment(public_key, sha256(target.script).digest(), output_hash)
+    return Commitment(owner_hash160, sha256(target.script).digest(), output_hash, public_key)
 
 
 def funding_output(value: int, public_key: bytes) -> Output:
-    """Construct a short output from the full uncompressed P-256 public key."""
-    commitment = _commitment(public_key, target_output(value, public_key))
+    """Construct a hash-only output from a validated uncompressed P-256 key."""
+    return funding_output_from_owner_hash(value, public_key_hash160(public_key))
+
+
+def funding_output_from_owner_hash(value: int, owner_hash160: bytes) -> Output:
+    """Construct a short output from the same owner hash as ordinary P2PKH-R1."""
+    commitment = _commitment(owner_hash160, target_output_from_owner_hash(value, owner_hash160))
     return Output(value, _locking_script(value, commitment))
 
 
-def recognize(output: Output, *, expected_key: bytes | None = None) -> Commitment | None:
+def recognize(output: Output, *, expected_key: bytes | None = None,
+              expected_owner_hash: bytes | None = None) -> Commitment | None:
     """Recognize only an exact canonical output, including both commitments and its value."""
-    if not output.script.startswith(bytes([PUBLIC_KEY_SIZE, 4])):
-        return None
-    public_key = output.script[1:1 + PUBLIC_KEY_SIZE]
-    if expected_key is not None and expected_key != public_key:
-        return None
+    public_key = None
     try:
-        commitment = _commitment(public_key, target_output(output.value, public_key))
+        if output.script.startswith(bytes([OWNER_HASH_SIZE])):
+            owner = output.script[1:1 + OWNER_HASH_SIZE]
+        elif output.script.startswith(bytes([PUBLIC_KEY_SIZE, 4])):
+            public_key = output.script[1:1 + PUBLIC_KEY_SIZE]
+            owner = public_key_hash160(public_key)
+        else:
+            return None
+        if expected_owner_hash is not None and expected_owner_hash != owner:
+            return None
+        if expected_key is not None and public_key_hash160(expected_key) != owner:
+            return None
+        if expected_key is not None and public_key is not None and expected_key != public_key:
+            return None
+        target = target_output_from_owner_hash(output.value, owner)
+        commitment = _commitment(owner, target, public_key)
     except ValueError:
         return None
     return commitment if output.script == _locking_script(output.value, commitment) else None

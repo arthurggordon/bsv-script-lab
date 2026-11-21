@@ -1,5 +1,5 @@
 use p2pkh_r1_deferred::{
-    activation_witness, activation_witness_with_digest, lock_for_key, recognize,
+    activation_witness, activation_witness_with_digest, lock_for_key, lock_for_owner, recognize,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -21,13 +21,22 @@ fn public_vectors() {
         let value = vector["value_sats"].as_u64().unwrap();
         let field = |name: &str| vector[name].as_str().unwrap();
         let key = hex::decode(field("public_key_x963")).unwrap();
+        let owner: [u8; 20] = hex::decode(field("owner_hash160"))
+            .unwrap()
+            .try_into()
+            .unwrap();
         let script = lock_for_key(&template, &r1, &key, value).unwrap();
+        assert_eq!(
+            script,
+            lock_for_owner(&template, &r1, &owner, value).unwrap()
+        );
         assert_eq!(
             hex::encode(Sha256::digest(&script)),
             field("locking_script_sha256")
         );
         let recognized = recognize(&r1, &script, value).unwrap();
-        assert_eq!(hex::encode(recognized.public_key), field("public_key_x963"));
+        assert_eq!(recognized.owner_hash160, owner);
+        assert!(recognized.public_key.is_none());
         assert_eq!(
             hex::encode(recognized.target_script_sha256),
             field("target_script_sha256")
@@ -37,6 +46,27 @@ fn public_vectors() {
             field("target_txout_hash256")
         );
         assert!(recognize(&r1, &script, value + 1).is_none());
+        let mut legacy = vec![65];
+        legacy.extend_from_slice(&key);
+        legacy.extend_from_slice(&script[21..]);
+        assert_eq!(
+            hex::encode(Sha256::digest(&legacy)),
+            field("legacy_locking_script_sha256")
+        );
+        let recognized_legacy = recognize(&r1, &legacy, value).unwrap();
+        assert_eq!(
+            recognized_legacy.public_key.as_ref().unwrap().as_slice(),
+            key
+        );
+        assert_eq!(recognized_legacy.owner_hash160, recognized.owner_hash160);
+        assert_eq!(
+            recognized_legacy.target_script_sha256,
+            recognized.target_script_sha256
+        );
+        assert_eq!(
+            recognized_legacy.target_txout_hash256,
+            recognized.target_txout_hash256
+        );
         if vector["id"] == activation["vector_id"] {
             let mut preimage =
                 hex::decode(activation["activation_preimage_hex"].as_str().unwrap()).unwrap();

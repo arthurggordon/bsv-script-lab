@@ -11,37 +11,49 @@ import (
 	r1 "github.com/linzhm/bsv-script-lab/projects/p2pkh-r1/sdk/go"
 )
 
-const fingerprint = "f73e2c43cabf95938529d89802b8cbea957932c51b13a3265261a5087c1c316d"
+const fingerprint = "c81b70f59e00402fb3cd936d174e7c8a45eb8205a18b3ad43fac29e93f58ccb4"
 
 type Commitment struct {
-	PublicKey          [65]byte
+	OwnerHash160       [20]byte
+	PublicKey          [65]byte // Zero unless the previous output disclosed a full public key.
 	TargetScriptSHA256 [32]byte
 	TargetTxOutHash256 [32]byte
 }
 
 func canonical(script []byte) bool {
-	if len(script) != 1480 {
+	if len(script) != 1435 {
 		return false
 	}
 	fixed := bytes.Clone(script)
-	clear(fixed[1:66])
-	clear(fixed[67:99])
-	clear(fixed[154:162])
-	clear(fixed[179:211])
+	clear(fixed[1:21])
+	clear(fixed[22:54])
+	clear(fixed[109:117])
+	clear(fixed[134:166])
 	hash := sha256.Sum256(fixed)
 	return hex.EncodeToString(hash[:]) == fingerprint
 }
 
-func LockForKey(template, r1Template, publicKey []byte, satoshis int64) ([]byte, error) {
-	if !canonical(template) {
+func isLegacy(script []byte) bool {
+	return len(script) == 1480 && script[0] == 65 && script[1] == 4
+}
+
+func compactTemplate(template []byte, owner [20]byte) []byte {
+	if isLegacy(template) {
+		script := make([]byte, 1, 1435)
+		script[0] = 20
+		script = append(script, owner[:]...)
+		return append(script, template[66:]...)
+	}
+	return bytes.Clone(template)
+}
+
+func buildLock(template, target []byte, owner [20]byte, satoshis int64) ([]byte, error) {
+	script := compactTemplate(template, owner)
+	if !canonical(script) {
 		return nil, errors.New("unrecognized deferred template")
 	}
 	if satoshis < 0 || satoshis > 2_100_000_000_000_000 {
 		return nil, errors.New("invalid amount")
-	}
-	target, err := r1.LockForKey(r1Template, publicKey)
-	if err != nil {
-		return nil, err
 	}
 	value := binary.LittleEndian.AppendUint64(nil, uint64(satoshis))
 	output := append(bytes.Clone(value), 0xfd)
@@ -53,24 +65,59 @@ func LockForKey(template, r1Template, publicKey []byte, satoshis int64) ([]byte,
 		return nil, errors.New("zero target commitment")
 	}
 	scriptHash := sha256.Sum256(target)
-	script := bytes.Clone(template)
-	copy(script[1:66], publicKey)
-	copy(script[67:99], scriptHash[:])
-	copy(script[154:162], value)
-	copy(script[179:211], outputHash[:])
+	copy(script[1:21], owner[:])
+	copy(script[22:54], scriptHash[:])
+	copy(script[109:117], value)
+	copy(script[134:166], outputHash[:])
 	return script, nil
 }
 
+func LockForOwner(template, r1Template []byte, owner [20]byte, satoshis int64) ([]byte, error) {
+	target, err := r1.LockForOwner(r1Template, owner)
+	if err != nil {
+		return nil, err
+	}
+	return buildLock(template, target, owner, satoshis)
+}
+
+func LockForKey(template, r1Template, publicKey []byte, satoshis int64) ([]byte, error) {
+	target, err := r1.LockForKey(r1Template, publicKey)
+	if err != nil {
+		return nil, err
+	}
+	owner, ok := r1.Recognize(target)
+	if !ok {
+		return nil, errors.New("unrecognized target R1 lock")
+	}
+	return buildLock(template, target, owner, satoshis)
+}
+
 func Recognize(r1Template, script []byte, satoshis int64) (Commitment, bool) {
-	if len(script) != 1480 {
+	legacy := isLegacy(script)
+	if !legacy && len(script) != 1435 {
 		return Commitment{}, false
 	}
-	key := script[1:66]
-	expected, err := LockForKey(script, r1Template, key, satoshis)
-	if err != nil || !bytes.Equal(expected, script) {
+	var key [65]byte
+	owner := [20]byte(script[1:21])
+	if legacy {
+		key = [65]byte(script[1:66])
+		target, err := r1.LockForKey(r1Template, key[:])
+		if err != nil {
+			return Commitment{}, false
+		}
+		var ok bool
+		owner, ok = r1.Recognize(target)
+		if !ok {
+			return Commitment{}, false
+		}
+	}
+	compact := compactTemplate(script, owner)
+	expected, err := LockForOwner(compact, r1Template, owner, satoshis)
+	if err != nil || !bytes.Equal(expected, compact) {
 		return Commitment{}, false
 	}
-	return Commitment{[65]byte(key), [32]byte(script[67:99]), [32]byte(script[179:211])}, true
+	return Commitment{OwnerHash160: owner, PublicKey: key, TargetScriptSHA256: [32]byte(compact[22:54]),
+		TargetTxOutHash256: [32]byte(compact[134:166])}, true
 }
 
 // ActivationWitness encodes the paired output preimage and optional type byte plus selected transaction digest.
