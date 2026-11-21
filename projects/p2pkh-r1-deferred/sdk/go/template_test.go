@@ -1,0 +1,75 @@
+package deferred
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestPublicVectors(t *testing.T) {
+	read := func(path string) string {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	decode := func(value string) []byte {
+		b, err := hex.DecodeString(strings.Join(strings.Fields(value), ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	var layout struct {
+		Vectors []struct {
+			ID         int    `json:"id"`
+			Satoshis   int64  `json:"value_sats"`
+			PublicKey  string `json:"public_key_x963"`
+			ScriptHash string `json:"target_script_sha256"`
+			OutputHash string `json:"target_txout_hash256"`
+			LockHash   string `json:"locking_script_sha256"`
+		} `json:"vectors"`
+	}
+	if err := json.Unmarshal([]byte(read("../../template/layout.json")), &layout); err != nil {
+		t.Fatal(err)
+	}
+	var activation struct {
+		VectorID int    `json:"vector_id"`
+		Preimage string `json:"activation_preimage_hex"`
+		Witness  string `json:"unlocking_script_hex"`
+	}
+	if err := json.Unmarshal([]byte(read("../../template/activation-single.json")), &activation); err != nil {
+		t.Fatal(err)
+	}
+	template := decode(read("../../template/template.hex"))
+	r1 := decode(read("../../../p2pkh-r1/template/template.hex"))
+	for _, vector := range layout.Vectors {
+		script, err := LockForKey(template, r1, decode(vector.PublicKey), vector.Satoshis)
+		if err != nil || sha256.Sum256(script) != [32]byte(decode(vector.LockHash)) {
+			t.Fatalf("generation vector %d failed: %v", vector.ID, err)
+		}
+		recognized, ok := Recognize(r1, script, vector.Satoshis)
+		if !ok || recognized != (Commitment{[65]byte(decode(vector.PublicKey)),
+			[32]byte(decode(vector.ScriptHash)), [32]byte(decode(vector.OutputHash))}) {
+			t.Fatalf("recognition vector %d failed", vector.ID)
+		}
+		if _, ok := Recognize(r1, script, vector.Satoshis+1); ok {
+			t.Fatal("recognized a different amount")
+		}
+		if vector.ID == activation.VectorID {
+			preimage := decode(activation.Preimage)
+			witness, err := ActivationWitness(r1, script, vector.Satoshis, preimage)
+			if err != nil || hex.EncodeToString(witness) != activation.Witness {
+				t.Fatalf("activation vector failed: %v", err)
+			}
+			preimage[118] ^= 1
+			if _, err := ActivationWitness(r1, script, vector.Satoshis, preimage); err == nil {
+				t.Fatal("accepted a different target hash")
+			}
+		}
+	}
+}

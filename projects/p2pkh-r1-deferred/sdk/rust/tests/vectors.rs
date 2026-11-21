@@ -1,0 +1,48 @@
+use p2pkh_r1_deferred::{activation_witness, lock_for_key, recognize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+#[test]
+fn public_vectors() {
+    let decode_template =
+        |text: &str| hex::decode(text.split_whitespace().collect::<String>()).unwrap();
+    let template = decode_template(include_str!("../../../template/template.hex"));
+    let r1 = decode_template(include_str!("../../../../p2pkh-r1/template/template.hex"));
+    let layout: Value =
+        serde_json::from_str(include_str!("../../../template/layout.json")).unwrap();
+    let activation: Value =
+        serde_json::from_str(include_str!("../../../template/activation-single.json")).unwrap();
+
+    for vector in layout["vectors"].as_array().unwrap() {
+        let value = vector["value_sats"].as_u64().unwrap();
+        let field = |name: &str| vector[name].as_str().unwrap();
+        let key = hex::decode(field("public_key_x963")).unwrap();
+        let script = lock_for_key(&template, &r1, &key, value).unwrap();
+        assert_eq!(
+            hex::encode(Sha256::digest(&script)),
+            field("locking_script_sha256")
+        );
+        let recognized = recognize(&r1, &script, value).unwrap();
+        assert_eq!(hex::encode(recognized.public_key), field("public_key_x963"));
+        assert_eq!(
+            hex::encode(recognized.target_script_sha256),
+            field("target_script_sha256")
+        );
+        assert_eq!(
+            hex::encode(recognized.target_txout_hash256),
+            field("target_txout_hash256")
+        );
+        assert!(recognize(&r1, &script, value + 1).is_none());
+        if vector["id"] == activation["vector_id"] {
+            let mut preimage =
+                hex::decode(activation["activation_preimage_hex"].as_str().unwrap()).unwrap();
+            let witness = activation_witness(&r1, &script, value, &preimage).unwrap();
+            assert_eq!(
+                hex::encode(witness),
+                activation["unlocking_script_hex"].as_str().unwrap()
+            );
+            preimage[118] ^= 1;
+            assert!(activation_witness(&r1, &script, value, &preimage).is_err());
+        }
+    }
+}

@@ -1,0 +1,52 @@
+{
+  "template": "P2PKH-R1-Deferred",
+  "base_script_hex_file": "template.hex",
+  "script_bytes": 801,
+  "fields": {
+    "public_key_x963": {
+      "offset": 10,
+      "length": 65
+    },
+    "target_script_sha256": {
+      "offset": 76,
+      "length": 32
+    },
+    "input_value_le64": {
+      "offset": 139,
+      "length": 8
+    },
+    "target_txout_hash256": {
+      "offset": 166,
+      "length": 32
+    }
+  },
+  "fixed_bytes_sha256": "844eaecb0dc475389c5c3012042d98792243dc6eb84eea78bd7dc3bc4dd28cf6",
+  "base_vector_id": 1,
+  "base_script_sha256": "50632271a71efa147abe57c10362255c09804289792837bede75befc5bba1559",
+  "vectors": [
+    {
+      "id": 1,
+      "value_sats": 100000,
+      "public_key_x963": "046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+      "target_script_sha256": "b3acd6b92a23120bd24432ada2b1cac013fe06381d7ea96ac6c5a73c493f4287",
+      "target_txout_hash256": "4aa2ecf5279d2bf8b8e31a9530f8fe803eab6debfdff446602cecd10b4cf257b",
+      "locking_script_sha256": "50632271a71efa147abe57c10362255c09804289792837bede75befc5bba1559"
+    },
+    {
+      "id": 2,
+      "value_sats": 120000,
+      "public_key_x963": "047cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc4766997807775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1",
+      "target_script_sha256": "784e04964fb74a47ce963a3ed4ab31ba5163ba285491e0c7dc5520c31a1198e1",
+      "target_txout_hash256": "9362f6f8f597503382f5414379326ec10916f94d20638b2352efea577d33984a",
+      "locking_script_sha256": "a44b876d21dcf26fae12e7e66a96cb98e24817a22644b364c8dbb6e3112ea684"
+    },
+    {
+      "id": 3,
+      "value_sats": 1,
+      "public_key_x963": "045ecbe4d1a6330a44c8f7ef951d4bf165e6c6b721efada985fb41661bc6e7fd6c8734640c4998ff7e374b06ce1a64a2ecd82ab036384fb83d9a79b127a27d5032",
+      "target_script_sha256": "2b2c06dd465395926886682cd94187a2af006422be846bb92b625f2daaf98bc1",
+      "target_txout_hash256": "62ec317c82b384e56bf29e7b26791951eb2ea75fd0cf38280d28f02b65b7f957",
+      "locking_script_sha256": "47d9fd9205e6a00d556f4a203aa4bc6431f6ba9c742d703435241c81e200641d"
+    }
+  ]
+}

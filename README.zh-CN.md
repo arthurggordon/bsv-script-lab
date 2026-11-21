@@ -20,6 +20,7 @@
 | 项目 | 研究内容 | 开发入口 |
 |---|---|---|
 | [P2PKH-R1](projects/p2pkh-r1/README.md) | 以 P-256 公钥哈希收款，普通付款由设备签名一次 | [协议规范](projects/p2pkh-r1/docs/spec.zh-CN.md) · [TypeScript、Rust 和 Go 接入](projects/p2pkh-r1/docs/sdk.zh-CN.md) |
+| [P2PKH-R1-Deferred](projects/p2pkh-r1-deferred/README.md) | 801 字节短锁公开 P-256 公钥，并承诺后续启用的 R1 输出 | [锁定格式与复现验证](projects/p2pkh-r1-deferred/README.md) |
 | [P2PKH-SM2](projects/p2pkh-sm2/README.md) | 用 Bitcoin Script 执行 SM2 验签，并计算 SM3 与 ZA | [协议规范](projects/p2pkh-sm2/docs/spec.zh-CN.md) · [Python 参考实现](projects/p2pkh-sm2/reference/README.md) |
 | [Lamport OTS](projects/lamport-ots/README.md) | 基于 SHA-256 的一次性授权。每组密钥对应一个 UTXO，只签一次。 | [安全分析](projects/lamport-ots/docs/security.md) · [验证记录](projects/lamport-ots/docs/validation.md) |
 
@@ -42,7 +43,7 @@ Lamport 的锁定脚本包含公钥。普通 OTDA 路径的解锁脚本随参与
 
 ## 交易签名模式
 
-三个支付模板的参考实现均支持下列十二种 BIP143 ForkID 与 Chronicle OTDA 组合。每个输入独立选择模式，普通付款默认使用 `0x41`。
+P2PKH-R1、P2PKH-SM2 和 Lamport OTS 的参考实现支持下列十二种 BIP143 ForkID 与 Chronicle OTDA 组合。每个输入独立选择模式，普通付款默认使用 `0x41`。P2PKH-R1-Deferred 的启用输入固定使用 `0x43`。
 
 | 输出覆盖范围 | BIP143 ForkID | ForkID 加 ANYONECANPAY | Chronicle OTDA | OTDA 加 ANYONECANPAY |
 |---|---|---|---|---|
