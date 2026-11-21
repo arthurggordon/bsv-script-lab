@@ -45,6 +45,17 @@ func TestPublicVectors(t *testing.T) {
 	if err := json.Unmarshal([]byte(read("../../template/activation-single.json")), &activation); err != nil {
 		t.Fatal(err)
 	}
+	var modes struct {
+		Cases []struct {
+			Sighash   string `json:"sighash"`
+			Preimage  string `json:"activation_preimage_hex"`
+			Auxiliary string `json:"auxiliary_hex"`
+			Witness   string `json:"unlocking_script_hex"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal([]byte(read("../../template/sighash-modes.json")), &modes); err != nil {
+		t.Fatal(err)
+	}
 	template := decode(read("../../template/template.hex"))
 	r1 := decode(read("../../../p2pkh-r1/template/template.hex"))
 	for _, vector := range layout.Vectors {
@@ -69,6 +80,23 @@ func TestPublicVectors(t *testing.T) {
 			preimage[118] ^= 1
 			if _, err := ActivationWitness(r1, script, vector.Satoshis, preimage); err == nil {
 				t.Fatal("accepted a different target hash")
+			}
+			for _, mode := range modes.Cases {
+				paired := decode(mode.Preimage)
+				var additional [][]byte
+				if mode.Auxiliary != "" {
+					additional = append(additional, decode(mode.Auxiliary))
+				}
+				witness, err := ActivationWitness(r1, script, vector.Satoshis, paired, additional...)
+				if err != nil || hex.EncodeToString(witness) != mode.Witness {
+					t.Fatalf("activation mode %s failed: %v", mode.Sighash, err)
+				}
+				if len(additional) != 0 {
+					additional[0][0] ^= 0x80
+					if _, err := ActivationWitness(r1, script, vector.Satoshis, paired, additional...); err == nil {
+						t.Fatal("accepted a different ANYONECANPAY bit")
+					}
+				}
 			}
 		}
 	}

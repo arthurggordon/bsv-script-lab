@@ -1,5 +1,6 @@
 """Rebuild the public test templates and the deterministic activation vector."""
 import argparse
+from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -8,15 +9,15 @@ from textwrap import wrap
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
-from deferred import activate_input, funding_output, recognize, target_output
-from shared.transaction import Input, Transaction
+from deferred import activate_input, activation_preimages, funding_output, recognize, target_output
+from shared.transaction import CHRONICLE, SIGHASH_TYPES, Input, Transaction
 
 TEMPLATE = Path(__file__).resolve().parents[1] / 'template'
 FIELDS = {
-    'public_key_x963': (10, 65),
-    'target_script_sha256': (76, 32),
-    'input_value_le64': (139, 8),
-    'target_txout_hash256': (166, 32),
+    'public_key_x963': (1, 65),
+    'target_script_sha256': (67, 32),
+    'input_value_le64': (154, 8),
+    'target_txout_hash256': (179, 32),
 }
 
 
@@ -49,12 +50,23 @@ def artifacts():
                            input_index=0, output_index=0, sighash='43',
                            activation_preimage_hex=witness[2:].hex(), unlocking_script_hex=witness.hex(),
                            activation_txid=activation.txid())
+            modes = []
+            for flag in sorted(SIGHASH_TYPES):
+                version = 2 if flag & CHRONICLE else 1
+                spend = replace(unsigned, version=version)
+                preimage, auxiliary = activation_preimages(spend, 0, value, flag)
+                activated = activate_input(spend, 0, funding.serialize(), sighash=flag)
+                modes.append(dict(sighash=f'{flag:02x}', transaction_version=version,
+                                  activation_preimage_hex=preimage.hex(), auxiliary_hex=auxiliary.hex(),
+                                  unlocking_script_hex=activated.inputs[0].script.hex(),
+                                  activation_txid=activated.txid()))
     layout = dict(template='P2PKH-R1-Deferred', base_script_hex_file='template.hex', script_bytes=len(base),
                   fields={name: dict(offset=offset, length=length) for name, (offset, length) in FIELDS.items()},
                   fixed_bytes_sha256=fingerprint(base), base_vector_id=1,
                   base_script_sha256=sha256(base).hexdigest(), vectors=vectors)
     return {'template.hex': '\n'.join(wrap(base.hex(), 128)) + '\n', 'layout.json': json.dumps(layout, indent=2) + '\n',
-            'activation-single.json': json.dumps(payment, indent=2) + '\n'}
+            'activation-single.json': json.dumps(payment, indent=2) + '\n',
+            'sighash-modes.json': json.dumps(dict(vector_id=1, cases=modes), indent=2) + '\n'}
 
 
 def main():

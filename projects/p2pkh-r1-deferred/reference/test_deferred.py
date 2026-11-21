@@ -10,11 +10,11 @@ from cryptography.hazmat.primitives.asymmetric import ec, utils
 from tx_engine import Script, Tx, TxIn, TxOut
 
 from deferred import (
-    ACTIVATION_SIGHASH, SCRIPT_CODE, activate_input, funding_output, recognize, target_output,
+    ACTIVATION_SIGHASH, DIRECT_TYPES, SCRIPT_CODE, activate_input, funding_output, recognize, target_output,
 )
 from generate_vectors import TEMPLATE, artifacts
 from shared.script import asm, push
-from shared.transaction import Input, Output, Transaction, hash256, preimage_forkid
+from shared.transaction import CHRONICLE, SIGHASH_TYPES, Input, Output, Transaction, hash256, preimage_forkid
 from wallet import sign_payment
 
 
@@ -66,6 +66,13 @@ def activation_fixture(funding, unsigned):
     return activate_input(first, 1, funding.serialize())
 
 
+def mode_activations(funding, unsigned):
+    for flag in sorted(SIGHASH_TYPES):
+        tx = replace(unsigned, version=2 if flag & CHRONICLE else 1)
+        tx = activate_input(tx, 0, funding.serialize())
+        yield flag, activate_input(tx, 1, funding.serialize(), sighash=flag)
+
+
 def wrong_activations(funding, unsigned, valid):
     previous = funding.outputs[1]
     changed_targets = (
@@ -111,12 +118,12 @@ class DeferredTests(unittest.TestCase):
         self.assertEqual(commitment.public_key, public_key)
         self.assertEqual(commitment.script_hash, sha256(unsigned.outputs[0].script).digest())
         self.assertEqual(commitment.output_hash, hash256(unsigned.outputs[0].serialize()))
-        self.assertEqual(output.script[10:75], public_key)
-        self.assertEqual(output.script[76:108], commitment.script_hash)
-        self.assertEqual(len(output.script), 801)
+        self.assertEqual(output.script[1:66], public_key)
+        self.assertEqual(output.script[67:99], commitment.script_hash)
+        self.assertEqual(len(output.script), 1480)
         self.assertIsNone(recognize(output, expected_key=second_key))
         self.assertIsNone(recognize(replace(output, value=output.value + 1)))
-        for offset in (0, 10, 76, 109, output.script.index(commitment.output_hash)):
+        for offset in (0, 1, 67, 99, output.script.index(commitment.output_hash)):
             raw = bytearray(output.script)
             raw[offset] ^= 1
             self.assertIsNone(recognize(replace(output, script=bytes(raw))))
@@ -160,6 +167,27 @@ class DeferredTests(unittest.TestCase):
                 tx = activate_input(tx, 0, funding.serialize())
             with self.subTest(label=label), self.assertRaises((ValueError, RuntimeError)):
                 engine_tx(tx).validate([engine_funding])
+
+    def test_all_modes_keep_the_forkid_output_constraint(self):
+        _, _, _, funding, unsigned = fixture()
+        parent = engine_tx(funding)
+        for flag, signed in mode_activations(funding, unsigned):
+            with self.subTest(flag=hex(flag)):
+                witness = signed.inputs[1].script
+                self.assertEqual(len(witness), 160 if flag in DIRECT_TYPES else 197)
+                engine_tx(signed).validate([parent])
+                # Keep input zero valid so rejection is attributable to input one.
+                outputs = (signed.outputs[0], replace(signed.outputs[1], value=119_999), signed.outputs[2])
+                altered = replace(signed, outputs=outputs).with_script(0, b'')
+                altered = activate_input(altered, 0, funding.serialize())
+                with self.assertRaises((ValueError, RuntimeError)):
+                    engine_tx(altered).validate([parent])
+                with self.assertRaises(ValueError):
+                    activate_input(replace(unsigned, outputs=unsigned.outputs[:1]), 1, funding.serialize(), sighash=flag)
+                if flag not in DIRECT_TYPES:
+                    wrong_digest = witness[:2] + bytes([witness[2] ^ 1]) + witness[3:]
+                    with self.assertRaises((ValueError, RuntimeError)):
+                        engine_tx(signed.with_script(1, wrong_digest)).validate([parent])
 
     def test_malformed_zero_commitment_fails_in_chain_gang(self):
         _, _, _, funding, unsigned = fixture()

@@ -1,4 +1,6 @@
-use p2pkh_r1_deferred::{activation_witness, lock_for_key, recognize};
+use p2pkh_r1_deferred::{
+    activation_witness, activation_witness_with_digest, lock_for_key, recognize,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -12,6 +14,8 @@ fn public_vectors() {
         serde_json::from_str(include_str!("../../../template/layout.json")).unwrap();
     let activation: Value =
         serde_json::from_str(include_str!("../../../template/activation-single.json")).unwrap();
+    let modes: Value =
+        serde_json::from_str(include_str!("../../../template/sighash-modes.json")).unwrap();
 
     for vector in layout["vectors"].as_array().unwrap() {
         let value = vector["value_sats"].as_u64().unwrap();
@@ -43,6 +47,29 @@ fn public_vectors() {
             );
             preimage[118] ^= 1;
             assert!(activation_witness(&r1, &script, value, &preimage).is_err());
+            for mode in modes["cases"].as_array().unwrap() {
+                let paired =
+                    hex::decode(mode["activation_preimage_hex"].as_str().unwrap()).unwrap();
+                let mut auxiliary = hex::decode(mode["auxiliary_hex"].as_str().unwrap()).unwrap();
+                let extra = (!auxiliary.is_empty()).then_some(auxiliary.as_slice());
+                let witness =
+                    activation_witness_with_digest(&r1, &script, value, &paired, extra).unwrap();
+                assert_eq!(
+                    hex::encode(witness),
+                    mode["unlocking_script_hex"].as_str().unwrap()
+                );
+                if !auxiliary.is_empty() {
+                    auxiliary[0] ^= 0x80;
+                    assert!(activation_witness_with_digest(
+                        &r1,
+                        &script,
+                        value,
+                        &paired,
+                        Some(&auxiliary)
+                    )
+                    .is_err());
+                }
+            }
         }
     }
 }

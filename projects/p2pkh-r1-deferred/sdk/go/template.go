@@ -11,7 +11,7 @@ import (
 	r1 "github.com/linzhm/bsv-script-lab/projects/p2pkh-r1/sdk/go"
 )
 
-const fingerprint = "844eaecb0dc475389c5c3012042d98792243dc6eb84eea78bd7dc3bc4dd28cf6"
+const fingerprint = "f73e2c43cabf95938529d89802b8cbea957932c51b13a3265261a5087c1c316d"
 
 type Commitment struct {
 	PublicKey          [65]byte
@@ -20,14 +20,14 @@ type Commitment struct {
 }
 
 func canonical(script []byte) bool {
-	if len(script) != 801 {
+	if len(script) != 1480 {
 		return false
 	}
 	fixed := bytes.Clone(script)
-	clear(fixed[10:75])
-	clear(fixed[76:108])
-	clear(fixed[139:147])
-	clear(fixed[166:198])
+	clear(fixed[1:66])
+	clear(fixed[67:99])
+	clear(fixed[154:162])
+	clear(fixed[179:211])
 	hash := sha256.Sum256(fixed)
 	return hex.EncodeToString(hash[:]) == fingerprint
 }
@@ -54,33 +54,57 @@ func LockForKey(template, r1Template, publicKey []byte, satoshis int64) ([]byte,
 	}
 	scriptHash := sha256.Sum256(target)
 	script := bytes.Clone(template)
-	copy(script[10:75], publicKey)
-	copy(script[76:108], scriptHash[:])
-	copy(script[139:147], value)
-	copy(script[166:198], outputHash[:])
+	copy(script[1:66], publicKey)
+	copy(script[67:99], scriptHash[:])
+	copy(script[154:162], value)
+	copy(script[179:211], outputHash[:])
 	return script, nil
 }
 
 func Recognize(r1Template, script []byte, satoshis int64) (Commitment, bool) {
-	if len(script) != 801 {
+	if len(script) != 1480 {
 		return Commitment{}, false
 	}
-	key := script[10:75]
+	key := script[1:66]
 	expected, err := LockForKey(script, r1Template, key, satoshis)
 	if err != nil || !bytes.Equal(expected, script) {
 		return Commitment{}, false
 	}
-	return Commitment{[65]byte(key), [32]byte(script[76:108]), [32]byte(script[166:198])}, true
+	return Commitment{[65]byte(key), [32]byte(script[67:99]), [32]byte(script[179:211])}, true
 }
 
-// ActivationWitness encodes a preimage built from the actual batch and authenticated prevout.
-func ActivationWitness(r1Template, script []byte, satoshis int64, preimage []byte) ([]byte, error) {
+// ActivationWitness encodes the paired output preimage and optional type byte plus selected transaction digest.
+func ActivationWitness(r1Template, script []byte, satoshis int64, preimage []byte, auxiliary ...[]byte) ([]byte, error) {
+	if len(auxiliary) > 1 {
+		return nil, errors.New("expected at most one auxiliary activation digest")
+	}
+	code := []byte{1, 0xac}
+	if len(auxiliary) == 1 {
+		code = []byte{4, 0xad, 0x68, 0xab, 0xac}
+	}
+	valueOffset := 104 + len(code)
 	commitment, ok := Recognize(r1Template, script, satoshis)
-	if !ok || len(preimage) != 158 || !bytes.Equal(preimage[104:106], []byte{1, 0xac}) ||
-		binary.LittleEndian.Uint64(preimage[106:114]) != uint64(satoshis) ||
-		binary.LittleEndian.Uint32(preimage[154:]) != 0x43 ||
-		!bytes.Equal(preimage[118:150], commitment.TargetTxOutHash256[:]) {
+	if !ok || len(preimage) != valueOffset+52 || !bytes.Equal(preimage[104:valueOffset], code) ||
+		binary.LittleEndian.Uint64(preimage[valueOffset:]) != uint64(satoshis) ||
+		!bytes.Equal(preimage[valueOffset+12:valueOffset+44], commitment.TargetTxOutHash256[:]) {
 		return nil, errors.New("activation preimage does not match the funding output")
 	}
-	return append([]byte{0x4c, 158}, preimage...), nil
+	bindingType := binary.LittleEndian.Uint32(preimage[len(preimage)-4:])
+	if bindingType != 0x43 && bindingType != 0xc3 {
+		return nil, errors.New("expected ForkID SINGLE")
+	}
+	var witness []byte
+	if len(auxiliary) == 1 {
+		extra := auxiliary[0]
+		if len(extra) != 33 {
+			return nil, errors.New("invalid auxiliary activation digest")
+		}
+		mode := extra[0]
+		if mode&0x5f < 0x41 || mode&0x5f > 0x43 || mode == 0x43 || mode == 0xc3 ||
+			uint32(mode&0x80) != bindingType&0x80 {
+			return nil, errors.New("invalid auxiliary activation type")
+		}
+		witness = append([]byte{33}, extra...)
+	}
+	return append(append(witness, 0x4c, byte(len(preimage))), preimage...), nil
 }

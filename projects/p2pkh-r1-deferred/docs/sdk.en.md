@@ -8,10 +8,10 @@ All three source SDKs use the [deferred template](../template/template.hex) and 
 |---|---|---|---|
 | Construct the short lock | `lockForKey` | `lock_for_key` | `LockForKey` |
 | Recognize the complete script | `recognize` | `recognize` | `Recognize` |
-| Encode the activation unlocking script | `activationWitness` | `activation_witness` | `ActivationWitness` |
+| Encode the activation unlocking script | `activationWitness` | `activation_witness`, `activation_witness_with_digest` | `ActivationWitness` |
 
 Construction takes both templates, the recipient key, and amount. Recognition takes the R1 template, actual short lock, and actual amount. It reconstructs the full script before returning the validated public key, target script SHA-256, and target output HASH256. The receiving wallet checks the expected key and amount against its invoice.
 
-Finalize the paired inputs and outputs, fee inputs, and change. The transaction builder constructs the `0x43` preimage from the actual transaction and authenticated previous output. The SDK witness helper checks the supplied scriptCode, amount, output commitment, and sighash before encoding one push. See the [Python reference](../reference/README.md) for complete transaction construction. Use the [ordinary R1 SDK](../../p2pkh-r1/docs/sdk.en.md) and its external signer callback for the activated output.
+Finalize the paired inputs and outputs, fee inputs, and change. The builder constructs a ForkID SINGLE preimage from the actual transaction and authenticated previous output. Pass only this preimage for a direct `0x43` or `0xc3` activation. For other modes, also pass the 33-byte `typeByte || HASH256(selectedPreimage)` and use the two-check scriptCode in the specification for the paired preimage. The helper validates the preimage fields and sighash combination before encoding the pushes. See the [Python reference](../reference/README.md) for complete transaction construction. Use the [ordinary R1 SDK](../../p2pkh-r1/docs/sdk.en.md) and its external signer callback for the activated output.
 
-Run `npm test`, `cargo test`, or `go test ./...` in the corresponding SDK directory. Each suite replays the [generation and recognition vectors](../template/layout.json) and [activation vector](../template/activation-single.json).
+Run `npm test`, `cargo test`, or `go test ./...` in the corresponding SDK directory. Each suite replays the [generation and recognition vectors](../template/layout.json) and the [twelve activation modes](../template/sighash-modes.json).
