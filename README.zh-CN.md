@@ -46,7 +46,7 @@ Lamport 的锁定脚本包含公钥。普通 OTDA 路径的解锁脚本随参与
 
 ## 交易签名模式
 
-四个支付模板的参考实现均支持下列十二种 BIP143 ForkID 与 Chronicle OTDA 组合。每个输入独立选择模式，普通付款默认使用 `0x41`。
+五个支付模板的参考实现均支持下列十二种 BIP143 ForkID 与 Chronicle OTDA 组合。每个输入独立选择模式，普通付款默认使用 `0x41`。
 
 | 输出覆盖范围 | BIP143 ForkID | ForkID 加 ANYONECANPAY | Chronicle OTDA | OTDA 加 ANYONECANPAY |
 |---|---|---|---|---|
