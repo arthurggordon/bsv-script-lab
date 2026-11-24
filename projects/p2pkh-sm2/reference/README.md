@@ -31,3 +31,45 @@ For this revision, the 112 complete-input coverage cases were run through both p
 [BSV Node source](https://github.com/bitcoin-sv/bitcoin-sv/tree/6504a3aff65ba97c0f6c80962b033e35ecbfed4b) · [chain-gang source](https://github.com/linzhm/chain-gang/tree/5cb8c6e410dbfad1c619cec3ca54d1bcaacd4eb7) · [Chronicle release](https://docs.bsvblockchain.org/network-topology/nodes/sv-node/chronicle-release)
 
 The [standard vector](../template/sm2-standard.json), [payment vector](../template/spend-all.json), and [layout manifest](../template/layout.json) are checked in. Raw lock bytes are generated on demand and checked against the pinned manifest hash.
+
+## SignedData payment interop
+
+[GB/T 35275-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=28A18B702BDC318803E598F5E502E2CC)
+specifies the SM2 signed message container. A configured provider can return
+`SignedData` with the signature, algorithm identifiers, signer identifier and
+optional content. The existing wallet callback accepts the raw 64-byte `r || s`
+authorization. The adapter bridges these formats before the wallet builds the
+input witness.
+
+```python
+from p2pkh_sm2 import sign_input
+from signed_data import signed_data_signer
+
+signer = signed_data_signer(provider, public_key, signer_identifier=pinned_der_sid)
+signed_tx = sign_input(tx, input_index, funding_raw, public_key, signer, sighash_type)
+```
+
+`provider(message, user_id)` returns DER bytes. Configure the public key and
+complete DER signer identifier from a trusted source. This profile accepts one
+direct SM2 signer over the 32-byte payment message, with attached or detached
+content and the template's fixed SM2 user ID. The adapter validates an attached
+message against the caller's bytes, decodes the signature and verifies it with
+the pinned key. Embedded certificate and revocation fields are treated as
+metadata. An application that uses PKI establishes certificate trust separately.
+
+With `signedAttrs`, the signer signs the DER attributes. Such a signature
+requires a verifier for that signed payload. The payment adapter rejects it
+because the current template verifies the transaction message directly.
+
+The independent [Go signer](interop/go-signer/README.md) uses
+`github.com/emmansun/gmsm@v0.45.4` for SM2/SM3 and Go's ASN.1 encoder to emit a
+complete GB/T 35275-2026 envelope from a separate process. Its attached ForkID
+and detached Chronicle OTDA payments both pass the complete-input engine. The
+18-test suite also covers an independent OpenSSL SM2 signature, wrong-key and
+wrong-message cases, and byte-for-byte witness equivalence with the raw-signature
+path.
+
+GmSSL 3.2.0 `cmssign` was checked separately. It emits the related GM/T 0010
+profile with `SignerInfo.version = 1`; the national-standard adapter requires
+version 2 and rejects that envelope. This distinction prevents a GM/T 0010
+response from being silently labeled GB/T 35275-2026.
