@@ -23,13 +23,15 @@ Run from the repository root in a Python virtual environment.
 ```sh
 python -m pip install -r projects/wots-plus/reference/requirements.txt
 python -m unittest discover -s projects/wots-plus/reference -p test_wots.py -v
-(cd projects/wots-plus/reference && python -m unittest -v test_node.ChainGangTests)
+(cd projects/wots-plus/reference && python -m unittest -v test_node.ChainGangTests test_acceptance)
 ```
 
 Use `bash projects/wots-plus/reference/verify.sh` for the isolated BSV Node
 runner on Linux x86-64, or `bash projects/wots-plus/reference/verify_apple.sh`
 with Apple Container. The complete-input checks use synthetic funds and compare
-the BSV Node result with chain-gang.
+the BSV Node result with chain-gang. The bounded matrix checks 1,230 rows
+against separately specified sighash outcomes. A separate complete-input
+test exercises a one-bit mutation in each of the 67 signature chains.
 
 See the [validation record](docs/validation.md) for completed checks, test
 limits and the script-size comparison with Lamport OTS. The 16 reproducible

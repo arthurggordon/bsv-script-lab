@@ -33,7 +33,7 @@ def funding_transaction(key):
     return Transaction((Input(b"\x62" * 32, 0),), (Output(10_000, locking_script(key)),))
 
 
-def mode_fixture(flag, *, paired=True):
+def mode_fixture(flag, *, paired=True, version=2):
     seeds = fixture_seeds(bytes([flag, paired]))
     key = public_key(*seeds)
     parent = funding_transaction(key)
@@ -41,15 +41,15 @@ def mode_fixture(flag, *, paired=True):
     outputs = (Output(500, b"\x51"), Output(10_400, b"\x51"))
     if not paired:
         outputs = (Output(10_900, b"\x51"),)
-    tx = Transaction((Input(other.txid_wire(), 0), Input(parent.txid_wire(), 0)), outputs)
+    tx = Transaction((Input(other.txid_wire(), 0), Input(parent.txid_wire(), 0)), outputs, version=version)
     signed = sign_spend(tx, 1, parent.serialize(), key, lambda digest: sign_digest(*seeds, digest), sighash=flag)
     return seeds, (other, parent), signed
 
 
-def mode_cases():
+def mode_cases(*, version=2):
     """Yield (name, spend, funding transactions, input index, expected result)."""
     for flag in sorted(SIGHASH_TYPES):
-        _, parents, signed = mode_fixture(flag)
+        _, parents, signed = mode_fixture(flag, version=version)
         other, parent = parents
         base = flag & 31
         prefix = f"{flag:02x}_"
@@ -73,7 +73,7 @@ def mode_cases():
         moved_pair = replace(signed, inputs=tuple(reversed(signed.inputs)), outputs=tuple(reversed(signed.outputs)))
         yield prefix + "moved_pair", moved_pair, tuple(reversed(parents)), 0, flag == (0x40 | ANYONECANPAY | SIGHASH_SINGLE)
 
-        seeds, parents, signed = mode_fixture(flag, paired=False)
+        seeds, parents, signed = mode_fixture(flag, paired=False, version=version)
         yield prefix + "unpaired", signed, parents, 1, True
         other_output = replace(signed, outputs=(Output(10_899, b"\x51"),))
         yield prefix + "unpaired_other_output", other_output, parents, 1, True
@@ -92,8 +92,8 @@ def mode_cases():
             yield prefix + "companion_wrong_selector", signed.with_script(1, unlock[:-1] + number(0)), parents, 1, False
 
 
-def malformed_cases():
-    seeds, parents, signed = mode_fixture(0x41)
+def malformed_cases(*, version=2):
+    seeds, parents, signed = mode_fixture(0x41, version=version)
     preimage, signature, _ = evaluate(signed.inputs[1].script)[0]
 
     def witness(preimage, signature, selector=0):

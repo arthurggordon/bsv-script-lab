@@ -4,10 +4,47 @@
 |---|---|
 | Python and development Script tests | 7 passed, including all 67 signature-chain mutations, concurrent signer use and 16 deterministic payment vectors |
 | Independent XMSS C reference | Public endpoint commitment and four complete signatures matched revision `171ccbd26f098542a67eb5d2b128281c80bd71a6`, built against OpenSSL |
-| chain-gang complete inputs | All 123 outcomes matched at revision `5cb8c6e410dbfad1c619cec3ca54d1bcaacd4eb7`, covering all 12 modes, unpaired `SINGLE` and malformed witnesses |
+| chain-gang complete inputs | All 1,230 declared payment rows matched at revision `74676b9c002c452e7f21a9ed9265f4972bef03f6`. The fixture covers all 12 modes, unpaired `SINGLE`, malformed witnesses and explicit Chronicle contexts. |
 | Existing templates | All 12 Lamport regression tests and both repository layout tests passed, including existing signature vectors and canonical R1 bytes |
-| BSV Node 1.2.3 | Native verdicts pending. Apple Container launch was denied by the local runner, and the Linux release host was unreachable |
-| bsv-script-lean | The complete-input adapter serialized 125 fixtures, including two pre-Chronicle spends. Lean verdicts pending because the evaluator and its pinned Lean 4.34.0/Mathlib toolchain were unavailable |
+| BSV Node 1.2.3 | All 1,230 declared payment rows matched on isolated Linux x86-64 regtest. Every response returned the supplied script flags. |
+| bsv-script-lean | The existing replay matched 125 of 125 fixtures, including two pre-Chronicle spends. The executable from the `1c051eaef1077cc95e5d1618686d5efacc4aa097` checkout reported `spec@unknown` and had SHA-256 `e0451889b7259997aceaaf119c3d1075b2336ecd7004f3a37f13a5d18061d699`. |
+
+## Bounded coverage of complete payments
+
+The [acceptance fixture](../reference/test_acceptance.py) builds the expected key
+set from the payment specification. It checks the fixture generators against
+that set and judges each spend independently using the documented sighash
+commitments and Chronicle activation.
+
+| Base case family | Required labels |
+|---|---:|
+| 12 modes × original paired spend and six mutations | 84 |
+| Four `SINGLE` modes × five pairing and unpaired-output cases | 20 |
+| Two OTDA `SINGLE` modes × two companion witness mutations | 4 |
+| Named malformed witness and preimage cases | 15 |
+| Total | 123 |
+
+Each label is crossed with transaction versions 1 and 2 and five height
+contexts. With Chronicle activation at height 3, those contexts are spending
+at height 2 with input creation heights `(1, 1)`, and spending at height 4
+with each of `(1, 1)`, `(1, 3)`, `(3, 1)`, and `(3, 3)`. The product has
+`123 × 2 × 5 = 1,230` distinct rows. An assertion rejects duplicate or
+unexpected rows, and exact set equality after validation detects any missing
+row. The table of accepted flags is written independently of the generator's
+sighash masks. It admits 25 base cases before activation and 49 in each
+post-activation context, so the product must contain exactly 442 accepted
+and 788 rejected rows. A chain-gang rejection must report script failure.
+The native RPC run also compares the exact flags for the selected input.
+An in-memory mutation check independently removed a generated label,
+duplicated a label, and flipped a fixture's expected verdict. The suite
+reported all three changes as failures.
+
+One additional complete spend pins the packed length of 67 chains and tests
+flipping the low bit of each chain's first byte separately. The reference spend and the
+67 mutations are checked in both engines. This proves coverage of the 67
+selected positions in that witness. Arbitrary Script bytes, all keys and
+signature mutations, other chain heights, miner policy and persistent key
+management fall outside the finite payment proof. [WOTS+ specification](spec.md)
 
 ## ForkID `ALL` measurements
 

@@ -39,18 +39,20 @@ def chain_valid(tx, parents):
     return True
 
 
-def node_check(tx, parent, index):
+def node_check(tx, parent, index, *, spend_height=4, funding_height=3):
     # Every funding fixture spends output zero. The synthetic prevout isolates
     # the input under test, even in negative cases with a changed transaction.
     previous = parent.outputs[0]
     cookie = Path(os.environ["REGTEST_COOKIE"]).read_text().strip().split(":", 1)
-    flags = sum(1 << bit for bit in (1, 2, 3, 16, 18, 19, 20, 21))
+    flags = sum(1 << bit for bit in (1, 2, 3, 16, 18, 19))
+    flags |= (1 << 20) if spend_height >= 3 else 0
+    flags |= (1 << 21) if funding_height >= 3 else 0
     request = {
         "tx": tx.serialize().hex(),
         "n": index,
         "flags": flags,
         "reportflags": True,
-        "txo": {"lock": previous.script.hex(), "value": previous.value, "height": 3},
+        "txo": {"lock": previous.script.hex(), "value": previous.value, "height": funding_height},
     }
     response = requests.post(
         os.environ.get("REGTEST_URL", "http://127.0.0.1:18443"),
@@ -63,7 +65,7 @@ def node_check(tx, parent, index):
     if data.get("error"):
         raise AssertionError(data["error"])
     result = data["result"][0]
-    if result["flags"] & flags != flags or result["result"] not in ("ok", "error"):
+    if result["flags"] != flags or result["result"] not in ("ok", "error"):
         raise AssertionError(result)
     return result["result"] == "ok"
 
