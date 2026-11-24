@@ -13,7 +13,8 @@ from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
 from ecdsa.der import read_length, remove_integer, remove_sequence
 from ecdsa.util import sigdecode_der
 from signed_data import MissingAttributeSchema, MissingExtensionSchema
-from signed_data import signed_data_signer, validate_signed_data_format, verify_signed_data
+from signed_data import signed_data_signer, validate_crl_pair, validate_crl_series
+from signed_data import validate_signed_data_format, verify_signed_data
 from sm2 import N
 from test_signed_data import (
     DATA_OID, ISSUER_AND_SERIAL, OTHER_ISSUER_AND_SERIAL, SIGNED_DATA_OID,
@@ -94,6 +95,8 @@ CLAUSE_EVIDENCE = {
     'GB/T 20518-2018.5.3.3.2.Signature': ('x509_algorithms',),
     'GB/T 20518-2018.5.3.3.3.CRLIssuer': ('crl_field_encoding',),
     'GB/T 20518-2018.5.3.4.1-5.CRLExtensionProfile': ('crl_profile',),
+    'GB/T 20518-2018.5.3.4.3.CRLNumberSequence': ('crl_series', 'crl_pair'),
+    'GB/T 20518-2018.5.3.4.4.DeltaBaseNumber': ('crl_profile', 'crl_pair'),
     'GB/T 20518-2018.5.3.4.5.IssuingDistributionPoint': ('crl_field_encoding',),
     'GB/T 20518-2018.5.3.4.6-7.CRLAndEntryExtensions': ('crl_entry_profile',),
     'GB/T 20518-2018.5.2.3.5.2.ValidityTime': ('x509_time',),
@@ -102,6 +105,9 @@ CLAUSE_EVIDENCE = {
     'GB/T 20518-2018.5.3.3.5.nextUpdate': ('crl_next_update', 'x509_time'),
     'GB/T 20518-2018.5.3.3.6.RevokedCertificates': ('crl_field_encoding',),
     'GB/T 20518-2018.5.3.2.ExtensionVersionDependencies': ('x509_extensions',),
+    'RFC 5280.5.2.3.CRLNumbers': ('crl_profile', 'crl_series'),
+    'RFC 5280.5.2.4.DeltaCombinationMetadata': ('crl_pair',),
+    'RFC 5280.7.1-7.3.CRLIssuerNameMatching': ('crl_pair',),
     'X.690.8.3.Integer': ('unsigned_attribute',),
     'X.690.8.4.Enumerated': ('open_value_forms',),
     'X.690.8.6.2.BitString': ('open_value_der',),
@@ -1238,6 +1244,11 @@ class SignedDataReview(SignedDataFixtures):
         cases = (
             ('complete CRL', number + extension(28, distribution, critical=True), None),
             ('delta CRL', number + delta, None),
+            ('delta without own number', delta, 'delta CRL requires cRLNumber'),
+            ('delta equal to its base', extension(20, der(0x02, b'\x05')) + delta,
+             'delta CRL number must be greater than its BaseCRLNumber'),
+            ('delta lower than its base', extension(20, der(0x02, b'\x04')) + delta,
+             'delta CRL number must be greater than its BaseCRLNumber'),
             ('twenty-octet CRL number', extension(20, der(0x02, b'\x7f' + b'\xff' * 19)), None),
             ('critical AKI', extension(35, der(0x30, der(0x80, b'test key identifier')), critical=True),
              'authorityKeyIdentifier must be noncritical'),
@@ -1262,6 +1273,118 @@ class SignedDataReview(SignedDataFixtures):
                     with self.assertRaisesRegex(ValueError, error):
                         validate_signed_data_format(envelope)
         COMPLETED_WITNESSES.add('crl_profile')
+
+    def crl_revision_factory(self):
+        _, crl = self.issue_certificate_and_crl(version_2_crl=True)
+        body, algorithm = x509_signed_parts(crl)
+        version, signature, _, _, next_update, *_ = encoded_fields(body)
+
+        def issue(time, number, *, base=None, common_name=b'Review issuer', name_tag=0x0c,
+                  scope=None, domain=None, repeated_name=None):
+            def rdn_attribute(oid, tag, value):
+                return der(0x30, ObjectIdentifier(oid).dump() + der(tag, value))
+
+            attributes = [rdn_attribute('2.5.4.3', name_tag, common_name)]
+            if repeated_name is not None:
+                attributes.append(rdn_attribute('2.5.4.3', name_tag, repeated_name))
+            issuer = der(0x31, b''.join(sorted(attributes)))
+            if domain is not None:
+                issuer += der(0x31, rdn_attribute('0.9.2342.19200300.100.1.25', 0x16, domain))
+            revision = b'' if number is None else x509_extension('2.5.29.20', Integer(number).dump())
+            if base is not None:
+                revision += x509_extension('2.5.29.27', Integer(base).dump(), critical=True)
+            if scope is not None:
+                revision += x509_extension('2.5.29.28', der(0x30, der(scope, b'\xff')), critical=True)
+            fields = version + signature + der(0x30, issuer) + der(0x17, time) + next_update
+            if revision:
+                fields += der(0xa0, der(0x30, revision))
+            return self.sign_review_metadata(fields, algorithm)
+
+        return issue
+
+    def test_crl_series_numbering_exhausts_the_declared_comparison_domain(self):
+        issue = self.crl_revision_factory()
+        times = (b'250101000000Z', b'250102000000Z', b'250103000000Z')
+        # Each pair independently varies role, issue-time order and number order.
+        revisions = {(time, number, base): issue(time, number, base=base)
+                     for time, number, base in product(times, (1, 2, 3), (None, 0))}
+        rows = tuple(product((None, 0), (None, 0), times, (1, 2, 3)))
+        self.assertEqual(len(rows), 36)
+        for first_role, second_role, second_time, second_number in rows:
+            first = revisions[times[1], 2, first_role]
+            second = revisions[second_time, second_number, second_role]
+            error = None
+            if second_time == times[1]:
+                if first_role != second_role and second_number != 2:
+                    error = 'issued at the same time must have the same number'
+            elif (second_time > times[1] and second_number <= 2
+                  or second_time < times[1] and second_number >= 2):
+                error = 'CRL numbers must increase with thisUpdate'
+            for first_input, second_input in ((first, second), (second, first)):
+                with self.subTest(first_role=first_role, second_role=second_role,
+                                  second_time=second_time, second_number=second_number, reverse=first_input != first):
+                    if error is None:
+                        validate_crl_series(iter((first_input, second_input)))
+                    else:
+                        with self.assertRaisesRegex(ValueError, error):
+                            validate_crl_series(iter((first_input, second_input)))
+
+        release = issue(times[2], 3, base=0)
+        earlier_1 = issue(times[0], 1)
+        earlier_2 = issue(times[1], 2)
+        validate_crl_series((release, earlier_1, earlier_2))
+        # The first and last alone agree. A middle revision reusing the first
+        # number must still be rejected when the supplied series is unsorted.
+        with self.assertRaisesRegex(ValueError, 'CRL numbers must increase'):
+            validate_crl_series((release, earlier_1, issue(times[1], 1)))
+        with self.assertRaisesRegex(ValueError, 'CRL revision requires cRLNumber'):
+            validate_crl_series((issue(times[0], None),))
+        with self.assertRaisesRegex(ValueError, 'expected at least one CRL revision'):
+            validate_crl_series(())
+        COMPLETED_WITNESSES.add('crl_series')
+
+    def test_crl_pair_requires_compatible_roles_issuer_scope_numbers_and_times(self):
+        issue = self.crl_revision_factory()
+        early, current, late = (b'250101000000Z', b'250102000000Z', b'250103000000Z')
+        delta = issue(current, 4, base=2)
+        rows = tuple(product((1, 2, 3, 4, 5), (early, current, late)))
+        self.assertEqual(len(rows), 15)
+        for number, time in rows:
+            complete = issue(time, number)
+            with self.subTest(number=number, time=time):
+                if number < 2 or number >= 4:
+                    with self.assertRaisesRegex(ValueError, 'complete CRL number must be at least BaseCRLNumber'):
+                        validate_crl_pair(complete, delta)
+                elif time == current:
+                    with self.assertRaisesRegex(ValueError, 'issued at the same time must have the same number'):
+                        validate_crl_pair(complete, delta)
+                elif time == late:
+                    with self.assertRaisesRegex(ValueError, 'CRL numbers must increase'):
+                        validate_crl_pair(complete, delta)
+                else:
+                    validate_crl_pair(complete, delta)
+
+        complete = issue(early, 2)
+        scoped_base = issue(early, 2, scope=0x81)
+        scoped_delta = issue(current, 4, base=2, scope=0x81)
+        validate_crl_pair(scoped_base, scoped_delta)
+        validate_crl_pair(issue(early, 0), issue(current, 1, base=0))
+        validate_crl_pair(issue(early, 2, common_name=b'  ReViEw   ISSUER ', name_tag=0x13, domain=b'EXAMPLE'),
+                          issue(current, 4, base=2, domain=b'example'))
+        differing = (
+            ('delta in first position', issue(early, 2, base=1), delta, 'complete CRL followed by a delta CRL'),
+            ('complete in second position', complete, issue(current, 4), 'complete CRL followed by a delta CRL'),
+            ('different DN', issue(early, 2, common_name=b'Other issuer'), delta, 'same issuer name'),
+            ('repeated DN attribute', issue(early, 2, repeated_name=b'Another name'), delta, 'same issuer name'),
+            ('IDP only on complete', scoped_base, delta, 'same issuing distribution point scope'),
+            ('IDP only on delta', complete, scoped_delta, 'same issuing distribution point scope'),
+            ('different IDPs', scoped_base, issue(current, 4, base=2, scope=0x82), 'same issuing distribution point scope'),
+        )
+        for label, candidate, update, error in differing:
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(ValueError, error):
+                    validate_crl_pair(candidate, update)
+        COMPLETED_WITNESSES.add('crl_pair')
 
     def test_crl_issuer_revoked_sequence_and_implicit_flags(self):
         _, crl = self.issue_certificate_and_crl(version_2_crl=True)

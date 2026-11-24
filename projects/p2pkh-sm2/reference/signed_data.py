@@ -1,7 +1,11 @@
 """SM2 SignedData verification and the direct payment adapter."""
 
+from dataclasses import dataclass
+from datetime import datetime
+from itertools import groupby
+
 from asn1crypto.core import ObjectIdentifier
-from asn1crypto.x509 import Certificate as ASN1Certificate
+from asn1crypto.x509 import Certificate as ASN1Certificate, DirectoryString, Name as ASN1Name
 from cryptography.x509 import ReasonFlags, UnrecognizedExtension, UnsupportedGeneralNameType
 from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
 from cryptography.x509.oid import CRLEntryExtensionOID, ExtensionOID
@@ -563,10 +567,16 @@ def _check_crl_profile(extensions):
     distribution = fields.get(ExtensionOID.ISSUING_DISTRIBUTION_POINT)
     if distribution is not None and not distribution.critical:
         raise ValueError('issuingDistributionPoint must be critical')
-    is_delta = ExtensionOID.DELTA_CRL_INDICATOR in fields
+    delta = fields.get(ExtensionOID.DELTA_CRL_INDICATOR)
+    if delta is not None:
+        number = fields.get(ExtensionOID.CRL_NUMBER)
+        if number is None:
+            raise ValueError('delta CRL requires cRLNumber')
+        if number.value.crl_number <= delta.value.crl_number:
+            raise ValueError('delta CRL number must be greater than its BaseCRLNumber')
     freshest = fields.get(ExtensionOID.FRESHEST_CRL)
     if freshest is not None:
-        if is_delta:
+        if delta is not None:
             raise ValueError('freshestCRL must not appear on a delta CRL')
         if freshest.critical:
             raise ValueError('freshestCRL must be noncritical')
@@ -574,7 +584,7 @@ def _check_crl_profile(extensions):
             raise ValueError('freshestCRL must contain at least one distribution point')
         if any(point.reasons is not None or point.crl_issuer is not None for point in freshest.value):
             raise ValueError('freshestCRL distribution points must omit reasons and cRLIssuer')
-    return is_delta
+    return delta is not None
 
 
 def _check_crl_entry_profile(serial, extensions, *, is_delta):
@@ -645,6 +655,97 @@ def _check_crl(encoded, *, profile=False, schemas=None):
     except UnsupportedGeneralNameType as error:
         raise ValueError(f'invalid X.509 revocation extension: {error}') from error
     _require_extension_schemas(extensions, schemas)
+    return crl
+
+
+def _issuer_key(issuer):
+    # Preserve RDN order and multiplicity while matching DirectoryString and
+    # domainComponent attributes according to RFC 5280 §§7.1 and 7.3.
+    name = ASN1Name.load(issuer.public_bytes(), strict=True)
+    key = []
+    for rdn in name.chosen:
+        attributes = []
+        for attribute in rdn:
+            oid, value = attribute['type'], attribute['value']
+            if isinstance(value, DirectoryString):
+                canonical = attribute.prepped_value.encode('utf-8')
+            elif oid.native == 'domain_component':
+                canonical = value.native.lower().encode('ascii')
+            else:
+                canonical = value.dump()
+            attributes.append((oid.dotted, canonical))
+        key.append(tuple(sorted(attributes)))
+    return tuple(key)
+
+
+@dataclass(frozen=True)
+class _CRLRevision:
+    issuer: tuple
+    scope: bytes | None
+    issued: datetime
+    number: int
+    base: int | None
+
+
+def _crl_revision(encoded, schemas):
+    if not isinstance(encoded, bytes):
+        raise ValueError('expected a DER CRL')
+    crl = _check_crl(encoded, profile=True, schemas=schemas)
+    extensions = {extension.oid: extension.value for extension in crl.extensions}
+    number = extensions.get(ExtensionOID.CRL_NUMBER)
+    if number is None:
+        raise ValueError('CRL revision requires cRLNumber')
+    delta = extensions.get(ExtensionOID.DELTA_CRL_INDICATOR)
+    scope = extensions.get(ExtensionOID.ISSUING_DISTRIBUTION_POINT)
+    return _CRLRevision(_issuer_key(crl.issuer), scope.public_bytes() if scope is not None else None,
+                        crl.last_update_utc, number.crl_number, delta.crl_number if delta is not None else None)
+
+
+def _check_crl_numbering(revisions):
+    if not revisions:
+        raise ValueError('expected at least one CRL revision')
+    issuer = revisions[0].issuer
+    scope = revisions[0].scope
+    if any(revision.issuer != issuer for revision in revisions):
+        raise ValueError('CRL revisions must have the same issuer name')
+    if any(revision.scope != scope for revision in revisions):
+        raise ValueError('CRL revisions must have the same issuing distribution point scope')
+
+    by_time = sorted(revisions, key=lambda revision: revision.issued)
+    previous_max = -1
+    for _, members in groupby(by_time, key=lambda revision: revision.issued):
+        bucket = list(members)
+        numbers = {revision.number for revision in bucket}
+        kinds = {revision.base is not None for revision in bucket}
+        if len(kinds) > 1 and len(numbers) > 1:
+            raise ValueError('complete and delta CRLs issued at the same time must have the same number')
+        if min(numbers) <= previous_max:
+            raise ValueError('CRL numbers must increase with thisUpdate for the same issuer and scope')
+        previous_max = max(numbers)
+
+
+def validate_crl_series(crls, *, extension_schemas=None):
+    """Check issuance numbering for one caller-selected issuer and scope.
+
+    Supply DER CRLs in any order. The caller authenticates the issuer and
+    provides the relevant objects. This check compares issuance metadata.
+    """
+    _check_crl_numbering([_crl_revision(encoded, extension_schemas) for encoded in crls])
+
+
+def validate_crl_pair(complete_crl, delta_crl, *, extension_schemas=None):
+    """Check whether the supplied complete CRL can be updated by the delta.
+
+    The caller authenticates both CRLs with the same authorized signing key.
+    The function checks the metadata for combining the two DER CRLs.
+    """
+    complete = _crl_revision(complete_crl, extension_schemas)
+    delta = _crl_revision(delta_crl, extension_schemas)
+    if complete.base is not None or delta.base is None:
+        raise ValueError('expected a complete CRL followed by a delta CRL')
+    if not delta.base <= complete.number < delta.number:
+        raise ValueError('complete CRL number must be at least BaseCRLNumber and below the delta CRL number')
+    _check_crl_numbering((complete, delta))
 
 
 def _check_optional_set(fields, tag, field_name, parse_member, *, nonempty=False):

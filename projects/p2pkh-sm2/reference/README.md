@@ -131,6 +131,14 @@ unrecognized extension without a supplied schema raises
 `MissingExtensionSchema`. The check applies to certificates, CRLs and
 individual revoked-certificate entries.
 
+Use `validate_crl_series(crls, extension_schemas=...)` to compare the
+issuance numbers of DER CRLs for one authenticated issuer and scope. Use
+`validate_crl_pair(complete_crl, delta_crl, extension_schemas=...)` to check
+whether a numbered complete CRL meets the metadata requirements for
+combining with a delta CRL. The caller authenticates both lists against
+the same authorized signing key before relying on the pair check. Pass
+objects from the envelope or from another authenticated source.
+
 The general signature verifier takes `signed_attrs_encoding='cms-set'`
 for the CMS universal SET signing input. Select `'context-field'` to
 verify the original `[0]` field bytes. Each verification uses the selected

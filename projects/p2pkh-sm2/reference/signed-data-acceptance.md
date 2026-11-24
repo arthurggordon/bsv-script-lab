@@ -191,10 +191,10 @@ decisions require trusted inputs at the application layer.
 | GB/T 20518-2018 §§5.3.4.6–5.3.4.7 | freshestCRL belongs on complete CRLs, is noncritical, contains at least one distribution point and omits reasons and cRLIssuer. Reason and invalidity date are noncritical, removeFromCRL requires a delta CRL, and certificateIssuer has at least one name. Revoked-entry serial numbers must be positive and fit within 20 DER content octets. |
 | GB/T 20518-2018 §5.2.4.1 | A declared private ASN.1 type is checked for certificates, CRLs and revoked entries. Tests exercise valid types, invalid type and SET OF order, and a distinct missing-schema error. |
 
-Remaining X.509 scope includes the other extension-specific rules, issuer
-and subject relationships, and the ordering and scope of delta and complete
-CRLs across objects. The certificate fixture uses independently signed
-metadata to isolate each rejection from the signature bytes.
+Remaining X.509 scope includes other extension-specific rules, issuer
+and subject relationships, and revocation-state validation. The
+certificate fixture uses independently signed metadata to isolate each
+rejection from the signature bytes.
 The independent OpenSSL replay now runs 103 checks using a separate DER
 constructor. Added cases include a private extension schema, removeFromCRL,
 and crossed `signedAttrs` preimages.
@@ -213,6 +213,29 @@ envelope isolates metadata validation from content signature verification.
 
 [GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
 [ITU-T X.690](https://www.itu.int/rec/T-REC-X.690/en)
+
+### Complete and delta CRL relationships
+
+An individual delta CRL requires a `cRLNumber` greater than its
+`BaseCRLNumber`. A caller can validate issuance metadata across an
+authenticated series or check whether a complete CRL can serve as the
+input for a given delta CRL. An envelope can carry a delta CRL while the
+complete CRL is available from another source. The caller selects the
+series and establishes issuer identity before comparing its metadata.
+
+| Normative area | Executable evidence |
+| --- | --- |
+| GB/T 20518-2018 §§5.3.4.3–4 and RFC 5280 §5.2.3 | The profile rejects a missing delta number and numbers below or equal to the base. The series fixture independently crosses both CRL roles, the three issue-time orderings and the three number orderings in 36 rows, each run in both input orders. A three-object case checks a repeated number in an unsorted series. |
+| RFC 5280 §5.2.4 | The pair fixture crosses the five positions of the complete number around BaseCRLNumber and the delta number with three issue-time positions in 15 rows. It also checks role reversals, differing issuers, and both absent, both equal, one absent and unequal issuing distribution points. |
+| RFC 5280 §§7.1, 7.3 | The pair fixture exercises UTF8String and PrintableString comparison, insignificant space and case folding, domain-component case, and differing RDN attribute multiplicity. The distribution point scope is compared by its canonical DER value. |
+
+The fixtures use OpenSSL to sign and verify both CRLs before invoking the
+metadata verifier. Validation of the signing key and path, publication of
+the referenced complete CRL, and equality of the resulting revocation
+state are separate evidence requirements.
+[GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
+[RFC 5280 §5.2.4](https://www.rfc-editor.org/rfc/rfc5280#section-5.2.4) ·
+[RFC 5280 §7.1](https://www.rfc-editor.org/rfc/rfc5280#section-7.1)
 
 The national standard catalog and the published texts were rechecked for
 the two signature-encoding questions. The GB/T 33560 identifier assignments
