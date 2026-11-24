@@ -133,6 +133,23 @@ certificate-specific rules for signature algorithm identifiers have their
 own context. [GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
 [GB/T 33560-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=9BF813CEEAFB58A19534FF861465D8FD)
 
+## Open findings from the review of `4bcc9d5`
+
+`SignedDataReview` runs 36 conforming controls and 36 rejection cases.
+The three rejection tests currently report expected failures. Each expects
+every case to raise `ValueError`, and records any case that returns the
+valid payment signature or content. Fixture setup checks the OpenSSL
+signatures and runs every case before these assertions. The normal control
+test checks the number of cases and requires every conforming sample to
+pass. An unexpected success signals that the corresponding expected-failure
+marker should be removed.
+
+| Rule | Open rejection cases |
+| --- | --- |
+| GB/T 20518-2018 §§5.2.2 and 5.3.2 | Four checks for explicit NULL in both SM2 signature algorithm identifiers of a certificate or CRL. Both verification entry points also accept controls with omitted parameters. |
+| GB/T 20518-2018 §§5.2.3.5.2 and 5.3.3.4–5.3.3.5 | Eight checks replace one 2049 time at a time with GeneralizedTime, covering certificate `notBefore` and `notAfter` and CRL `thisUpdate` and `nextUpdate`. Controls encode both fields as UTCTime in 2049 and GeneralizedTime in 2050. |
+| X.690 §§8.4, 8.9–8.12 and 10.2 | Twenty-four checks cover primitive SEQUENCE and SET, constructed UTF8String and zero-length ENUMERATED. Each case runs as a direct and nested value through payment `unsignedAttrs` and general `unsignedAttrs` and `signedAttrs`. |
+
 ## Appendix A.1 audit
 
 The published example shows two unkeyed SM3 identifiers
@@ -146,9 +163,8 @@ The fixture pins a published hexadecimal transcription of the version-1
 example, checks the field offsets against the official listing, and replays
 its signature in OpenSSL over the 24 embedded bytes using the certificate's
 public key and the explicitly configured SM2 user ID. The valid signature
-provides an interoperability witness. The version discrepancy and the
-message length preclude use of the example as a strict v2 payment fixture.
-For general verification the fixture also checks that v2 rejects the
-original envelope and accepts a derivative with only the unsigned
-`SignerInfo.version` octet changed to 2.
+provides a historical interoperability witness. The fixture confirms that
+both signature algorithm identifiers of the embedded certificate contain
+explicit DER NULL. The standalone version test checks the normative version
+rule with a separate, valid v2 payment envelope.
 [Hexadecimal transcription](https://www.gm7.org/archives/108338)

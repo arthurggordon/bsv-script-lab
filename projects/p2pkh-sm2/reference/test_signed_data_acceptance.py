@@ -8,8 +8,8 @@ import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 
-from cryptography.x509 import load_der_x509_crl
-from ecdsa.der import remove_sequence
+from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
+from ecdsa.der import remove_integer, remove_sequence
 from ecdsa.util import sigdecode_der
 from signed_data import signed_data_signer, verify_signed_data
 from sm2 import N
@@ -26,6 +26,7 @@ USER_ID = b'1234567812345678'
 OTHER_ID = b'other user ID'
 NULL = der(0x05, b'')
 MESSAGE_DIGEST_OID = bytes.fromhex('06092a864886f70d010904')
+X509_SM2_OID = bytes.fromhex('06082a811ccf55018375')
 
 SIGNER_VERSIONS = (1, 2, 3)
 OUTER_VERSIONS = (1, 2)
@@ -80,7 +81,16 @@ CLAUSE_EVIDENCE = {
 COMPLETED_WITNESSES = set()
 
 
-class SignedDataAcceptance(unittest.TestCase):
+def x509_signed_parts(encoded):
+    outer, extra = remove_sequence(encoded)
+    if extra:
+        raise AssertionError('trailing data in the OpenSSL X.509 fixture')
+    body, outer_fields = remove_sequence(outer)
+    algorithm, _ = remove_sequence(outer_fields)
+    return body, algorithm
+
+
+class SignedDataFixtures(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         temp = TemporaryDirectory(prefix='sm2-signed-data-acceptance-')
@@ -121,27 +131,55 @@ class SignedDataAcceptance(unittest.TestCase):
                            '-inkey', key + '.pem', '-pkeyopt', 'distid:' + user_id.decode(),
                            '-in', 'payload.bin')
 
-    def external_verify(self, signature, data, *, key='signer', user_id=USER_ID):
-        path = self.directory / 'signature.der'
+    @classmethod
+    def external_verify(cls, signature, data, *, key='signer', user_id=USER_ID):
+        path = cls.directory / 'signature.der'
         path.write_bytes(signature)
-        (self.directory / 'payload.bin').write_bytes(data)
+        (cls.directory / 'payload.bin').write_bytes(data)
         result = subprocess.run([
             'openssl', 'pkeyutl', '-verify', '-pubin', '-rawin', '-digest', 'sm3',
             '-inkey', key + '-public.pem', '-pkeyopt', 'distid:' + user_id.decode(),
             '-sigfile', str(path), '-in', 'payload.bin',
-        ], cwd=self.directory, capture_output=True, timeout=15)
+        ], cwd=cls.directory, capture_output=True, timeout=15)
         if result.returncode == 0:
             return True
         if result.returncode == 1 and b'Signature Verification Failure' in result.stdout:
             return False
-        self.fail(f'OpenSSL could not verify the fixture: {result.returncode} {result.stderr!r}')
+        raise AssertionError(f'OpenSSL could not verify the fixture: {result.returncode} {result.stderr!r}')
 
-    def apply_adapter(self, envelope):
-        adapter = signed_data_signer(lambda *_: envelope, self.key, signer_identifier=ISSUER_AND_SERIAL)
+    @classmethod
+    def apply_adapter(cls, envelope):
+        adapter = signed_data_signer(lambda *_: envelope, cls.key, signer_identifier=ISSUER_AND_SERIAL)
         return adapter(MESSAGE, USER_ID)
 
-    def verify_attached(self, envelope):
-        return verify_signed_data(envelope, self.trusted_signers)
+    @classmethod
+    def verify_attached(cls, envelope):
+        return verify_signed_data(envelope, cls.trusted_signers)
+
+    @classmethod
+    def issue_certificate_and_crl(cls, *, version_2_crl=False):
+        cls.openssl('req', '-new', '-x509', '-key', 'signer.pem', '-sm3', '-subj', '/CN=Test issuer',
+                    '-set_serial', '1', '-days', '1', '-out', 'issuer.pem')
+        cert = cls.openssl('x509', '-in', 'issuer.pem', '-outform', 'DER')
+        cls.openssl('x509', '-inform', 'DER', '-noout', data=cert)
+        (cls.directory / 'index.txt').touch()
+        config = (
+            '[ca]\ndefault_ca = local\n[local]\ndatabase = index.txt\n'
+            'certificate = issuer.pem\nprivate_key = signer.pem\n'
+            'default_md = sm3\ndefault_crl_days = 1\n'
+        )
+        if version_2_crl:
+            (cls.directory / 'crlnumber').write_text('01\n', encoding='ascii')
+            config += 'crlnumber = crlnumber\n'
+        (cls.directory / 'ca.cnf').write_text(config, encoding='ascii')
+        crl_pem = cls.openssl('ca', '-gencrl', '-config', 'ca.cnf',
+                              '-crl_lastupdate', '260101000000Z', '-crl_nextupdate', '260102000000Z')
+        crl = cls.openssl('crl', '-outform', 'DER', data=crl_pem)
+        cls.openssl('crl', '-inform', 'DER', '-noout', data=crl)
+        return cert, crl
+
+
+class SignedDataAcceptance(SignedDataFixtures):
 
     def test_external_signatures_bind_the_declared_payloads(self):
         inputs = {
@@ -171,17 +209,15 @@ class SignedDataAcceptance(unittest.TestCase):
         cert, message, signature = encoded[90:854], encoded[62:86], encoded[1017:]
         self.assertEqual(len(message), 24)
         self.assertEqual(len(signature), 70)
+        tbs, outer_algorithm = x509_signed_parts(cert)
+        self.assertEqual(tbs[:5], bytes.fromhex('a003020102'))  # Explicit X.509 v3.
+        _, after_serial = remove_integer(tbs[5:])
+        inner_algorithm, _ = remove_sequence(after_serial)
+        self.assertEqual(inner_algorithm, X509_SM2_OID + NULL)
+        self.assertEqual(outer_algorithm, X509_SM2_OID + NULL)
         public = self.openssl('x509', '-inform', 'DER', '-noout', '-pubkey', data=cert)
         (self.directory / 'appendix-public.pem').write_bytes(public)
         self.assertTrue(self.external_verify(signature, message, key='appendix'))
-        key = self.openssl('pkey', '-pubin', '-in', 'appendix-public.pem', '-outform', 'DER')[-65:]
-        sid = encoded[863:985]
-        with self.assertRaisesRegex(ValueError, 'expected SignerInfo version 2'):
-            verify_signed_data(encoded, {sid: (key, USER_ID)})
-        # SignerInfo.version is outside the signed payload. Changing only
-        # this octet reuses the published content, certificate and signature.
-        version_2 = encoded[:862] + b'\x02' + encoded[863:]
-        self.assertEqual(verify_signed_data(version_2, {sid: (key, USER_ID)}), message)
         COMPLETED_WITNESSES.add('appendix_a1')
 
     def test_both_entry_points_enforce_the_standard_version_octets(self):
@@ -483,31 +519,10 @@ class SignedDataAcceptance(unittest.TestCase):
                         self.apply_adapter(envelope)
         COMPLETED_WITNESSES.add('certificate_fields')
 
-    def issue_certificate_and_crl(self, *, version_2_crl=False):
-        self.openssl('req', '-new', '-x509', '-key', 'signer.pem', '-sm3', '-subj', '/CN=Test issuer',
-                     '-set_serial', '1', '-days', '1', '-out', 'issuer.pem')
-        cert = self.openssl('x509', '-in', 'issuer.pem', '-outform', 'DER')
-        self.openssl('x509', '-inform', 'DER', '-noout', data=cert)
-        (self.directory / 'index.txt').touch()
-        config = (
-            '[ca]\ndefault_ca = local\n[local]\ndatabase = index.txt\n'
-            'certificate = issuer.pem\nprivate_key = signer.pem\n'
-            'default_md = sm3\ndefault_crl_days = 1\n'
-        )
-        if version_2_crl:
-            (self.directory / 'crlnumber').write_text('01\n', encoding='ascii')
-            config += 'crlnumber = crlnumber\n'
-        (self.directory / 'ca.cnf').write_text(config, encoding='ascii')
-        crl_pem = self.openssl('ca', '-gencrl', '-config', 'ca.cnf',
-                               '-crl_lastupdate', '260101000000Z', '-crl_nextupdate', '260102000000Z')
-        crl = self.openssl('crl', '-outform', 'DER', data=crl_pem)
-        self.openssl('crl', '-inform', 'DER', '-noout', data=crl)
-        return cert, crl
-
     def test_embedded_certificate_and_crl_signature_algorithms_match(self):
         cert, crl = self.issue_certificate_and_crl(version_2_crl=True)
         other_algorithm = der(0x30, bytes.fromhex('06082a8648ce3d040302'))
-        sm2_algorithm = bytes.fromhex('06082a811ccf55018375')
+        sm2_algorithm = X509_SM2_OID
         entry_points = ((self.apply_adapter, self.raw_direct), (self.verify_attached, MESSAGE))
         for field, tag, encoded in (('certificates', 0xa0, cert), ('crls', 0xa1, crl)):
             body, extra = remove_sequence(encoded)
@@ -693,6 +708,151 @@ class SignedDataAcceptance(unittest.TestCase):
                             with self.assertRaisesRegex(ValueError, f'^{prefix}invalid DER {error}'):
                                 entry_point(envelope)
         COMPLETED_WITNESSES.add('open_value_der')
+
+
+class SignedDataReview(SignedDataFixtures):
+    """Regression witnesses for the open findings in the review of 4bcc9d5."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.controls = {}
+        cls.rejection_cases = {rule: {} for rule in ('parameters', 'time', 'attributes')}
+        if not cls.external_verify(cls.signatures['direct'], MESSAGE):
+            raise AssertionError('invalid OpenSSL payment signature in review fixtures')
+        cls.check_x509_fixtures()
+        cls.check_attribute_fixtures()
+
+    @classmethod
+    def record_review_case(cls, rule, name, envelope, *, conforming, signed_attributes=False):
+        entry_points = [(cls.verify_attached, MESSAGE)]
+        if not signed_attributes:
+            entry_points.append((cls.apply_adapter, cls.raw_direct))
+        outcomes = cls.controls if conforming else cls.rejection_cases[rule]
+        for entry_point, expected in entry_points:
+            label = (rule, name, entry_point.__name__)
+            if label in outcomes:
+                raise AssertionError(f'duplicate review fixture {label}')
+            try:
+                result = entry_point(envelope)
+            except ValueError:
+                outcomes[label] = False
+            else:
+                if result != expected:
+                    raise AssertionError(f'{label} returned an unexpected payload or signature')
+                outcomes[label] = True
+
+    @classmethod
+    def check_x509_fixtures(cls):
+        cert, crl = cls.issue_certificate_and_crl(version_2_crl=True)
+        certificate = load_der_x509_certificate(cert)
+        revocation_list = load_der_x509_crl(crl)
+        metadata = (
+            ('certificate', 0xa0, cert, ('notBefore', 'notAfter'),
+             (certificate.not_valid_before_utc, certificate.not_valid_after_utc)),
+            ('CRL', 0xa1, crl, ('thisUpdate', 'nextUpdate'),
+             (revocation_list.last_update_utc, revocation_list.next_update_utc)),
+        )
+        for kind, tag, encoded, names, source_dates in metadata:
+            body, algorithm = x509_signed_parts(encoded)
+            if algorithm != X509_SM2_OID:
+                raise AssertionError('OpenSSL control must omit SM2 parameters')
+            cls.record_review_metadata('parameters', kind, tag, encoded, conforming=True)
+            with_null = algorithm + NULL
+            updated = cls.replace_fixture_field(body, der(0x30, algorithm), der(0x30, with_null))
+            cls.record_review_metadata('parameters', kind, tag, cls.sign_review_metadata(updated, with_null),
+                                       conforming=False)
+
+            def encode_dates(values):
+                data = b''.join(values)
+                return der(0x30, data) if kind == 'certificate' else data
+
+            source_times = []
+            for date in source_dates:
+                if date.year <= 2049:
+                    source_times.append(der(0x17, date.strftime('%y%m%d%H%M%SZ').encode()))
+                else:
+                    source_times.append(der(0x18, date.strftime('%Y%m%d%H%M%SZ').encode()))
+            original_dates = encode_dates(source_times)
+            dates_2049 = (b'491231000000Z', b'491231010000Z')
+            utc_times = [der(0x17, date) for date in dates_2049]
+            generalized_times = [der(0x18, date) for date in (b'20500101000000Z', b'20500101010000Z')]
+            for year, times in ((2049, utc_times), (2050, generalized_times)):
+                updated = cls.replace_fixture_field(body, original_dates, encode_dates(times))
+                cls.record_review_metadata('time', f'{kind} {year}', tag,
+                                           cls.sign_review_metadata(updated, algorithm), conforming=True)
+            for index, field in enumerate(names):
+                times = utc_times.copy()
+                times[index] = der(0x18, b'20' + dates_2049[index])
+                updated = cls.replace_fixture_field(body, original_dates, encode_dates(times))
+                cls.record_review_metadata('time', f'{kind} {field} in 2049', tag,
+                                           cls.sign_review_metadata(updated, algorithm), conforming=False)
+
+    @staticmethod
+    def replace_fixture_field(body, original, replacement):
+        if body.count(original) != 1:
+            raise AssertionError('expected one DER field to replace in the OpenSSL fixture')
+        return body.replace(original, replacement, 1)
+
+    @classmethod
+    def sign_review_metadata(cls, body, algorithm):
+        tbs = der(0x30, body)
+        signature = cls.external_signature(tbs)
+        if not cls.external_verify(signature, tbs):
+            raise AssertionError('invalid OpenSSL signature over review metadata')
+        return der(0x30, tbs + der(0x30, algorithm) + der(0x03, b'\x00' + signature))
+
+    @classmethod
+    def record_review_metadata(cls, rule, name, tag, encoded, *, conforming):
+        envelope = signed_data(cls.signatures['direct'], attached=MESSAGE, metadata=der(tag, encoded))
+        cls.record_review_case(rule, name, envelope, conforming=conforming)
+
+    @classmethod
+    def check_attribute_fixtures(cls):
+        oid = der(0x06, bytes.fromhex('2a0304'))
+        cases = (
+            ('SEQUENCE form', '3000', '1000'),
+            ('SET form', '3100', '1100'),
+            ('UTF8String form', '0c0141', '2c030c0141'),
+            ('ENUMERATED length', '0a0101', '0a00'),
+        )
+        for name, valid, invalid in cases:
+            for conforming, value in ((True, valid), (False, invalid)):
+                value = bytes.fromhex(value)
+                for location, node in (('direct', value), ('nested', der(0x30, value))):
+                    attribute = der(0x30, oid + der(0x31, node))
+                    unsigned = signed_data(cls.signatures['direct'], attached=MESSAGE,
+                                           unsigned_attrs=der(0xa1, attribute))
+                    cls.record_review_case('attributes', f'{name} {location} unsignedAttrs',
+                                           unsigned, conforming=conforming)
+                    members = b''.join(sorted((attribute, cls.attribute)))
+                    payload = der(0x31, members)
+                    signature = cls.external_signature(payload)
+                    if not cls.external_verify(signature, payload):
+                        raise AssertionError('invalid OpenSSL signedAttrs signature in review fixtures')
+                    signed = signed_data(signature, attached=MESSAGE, signed_attrs=der(0xa0, members))
+                    cls.record_review_case('attributes', f'{name} {location} signedAttrs',
+                                           signed, conforming=conforming, signed_attributes=True)
+
+    def test_review_controls_and_case_counts(self):
+        self.assertEqual(len(self.controls), 36)
+        self.assertEqual({rule: len(cases) for rule, cases in self.rejection_cases.items()},
+                         {'parameters': 4, 'time': 8, 'attributes': 24})
+        self.assertEqual([case for case, accepted in self.controls.items() if not accepted], [])
+
+    # Fixture generation, signature checks and endpoint calls run in
+    # setUpClass. Only an incorrect acceptance can cause an expected failure.
+    @unittest.expectedFailure
+    def test_rejects_null_sm2_parameters_in_certificates_and_crls(self):
+        self.assertEqual([case for case, accepted in self.rejection_cases['parameters'].items() if accepted], [])
+
+    @unittest.expectedFailure
+    def test_rejects_pre_2050_generalized_time_in_certificates_and_crls(self):
+        self.assertEqual([case for case, accepted in self.rejection_cases['time'].items() if accepted], [])
+
+    @unittest.expectedFailure
+    def test_rejects_non_der_sequence_set_utf8_and_enumerated_attribute_values(self):
+        self.assertEqual([case for case, accepted in self.rejection_cases['attributes'].items() if accepted], [])
 
 
 def check_traceability():
