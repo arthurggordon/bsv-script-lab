@@ -22,17 +22,23 @@ OTHER_ISSUER_AND_SERIAL = der(0x30, ISSUER + der(0x02, b'\x02'))
 SM3 = der(0x30, bytes.fromhex('06082a811ccf550183110500'))
 SM2 = der(0x30, bytes.fromhex('06092a811ccf5501822d010500'))
 SM2_WITH_SM3 = der(0x30, bytes.fromhex('06082a811ccf550183750500'))
+DATA_OID = bytes.fromhex('060a2a811ccf550601040201')
+SIGNED_DATA_OID = bytes.fromhex('060a2a811ccf550601040202')
 
 
 def signed_data(signature, *, attached=None, sid=ISSUER_AND_SERIAL, version=2,
-                outer_version=1, algorithm=SM2, signed_attrs=b''):
-    content = bytes.fromhex('060a2a811ccf550601040201')
+                outer_version=1, algorithm=SM2, signed_attrs=b'', unsigned_attrs=b'',
+                metadata=b'', content_oid=DATA_OID, outer_oid=SIGNED_DATA_OID,
+                digest_algorithms=SM3, signer_digest=SM3, extra_signers=b''):
+    content = content_oid
     if attached is not None:
         content += der(0xa0, der(0x04, attached))
-    signer = der(0x02, bytes((version,))) + sid + SM3 + signed_attrs + algorithm + der(0x04, signature)
-    body = (der(0x02, bytes((outer_version,))) + der(0x31, SM3)
-            + der(0x30, content) + der(0x31, der(0x30, signer)))
-    return der(0x30, bytes.fromhex('060a2a811ccf550601040202') + der(0xa0, der(0x30, body)))
+    signer = (der(0x02, bytes((version,))) + sid + signer_digest + signed_attrs + algorithm
+              + der(0x04, signature) + unsigned_attrs)
+    signers = b''.join(sorted((der(0x30, signer), extra_signers)))
+    body = (der(0x02, bytes((outer_version,))) + der(0x31, digest_algorithms)
+            + der(0x30, content) + metadata + der(0x31, signers))
+    return der(0x30, outer_oid + der(0xa0, der(0x30, body)))
 
 
 class SignedDataTests(unittest.TestCase):

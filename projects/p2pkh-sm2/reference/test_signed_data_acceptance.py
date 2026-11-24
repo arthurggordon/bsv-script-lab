@@ -1,0 +1,232 @@
+"""Finite acceptance model and clause witnesses for SM2 payment SignedData."""
+
+from itertools import product
+from math import prod
+from pathlib import Path
+import subprocess
+from tempfile import TemporaryDirectory
+import unittest
+
+from ecdsa.util import sigdecode_der
+from signed_data import signed_data_signer
+from sm2 import N
+from test_signed_data import (
+    DATA_OID, ISSUER_AND_SERIAL, OTHER_ISSUER_AND_SERIAL, SIGNED_DATA_OID,
+    SKI, SM2, SM2_WITH_SM3, SM3, signed_data,
+)
+from test_sm2 import der
+
+
+MESSAGE = bytes(range(32))
+OTHER_MESSAGE = bytes(reversed(MESSAGE))
+USER_ID = b'1234567812345678'
+OTHER_ID = b'other user ID'
+NULL = der(0x05, b'')
+
+CONFIGURED_VERSIONS = (1, 2)
+SIGNER_VERSIONS = (1, 2, 3)
+OUTER_VERSIONS = (1, 2)
+CONTENTS = (None, MESSAGE, OTHER_MESSAGE)
+ALGORITHMS = (SM2, SM2_WITH_SM3, SM3)
+SIGNATURES = ('direct', 'attributes', 'other_key', 'other_id', 'other_message')
+AXES = (CONFIGURED_VERSIONS, SIGNER_VERSIONS, OUTER_VERSIONS, CONTENTS, ALGORITHMS, SIGNATURES)
+CASE_COUNT = 540
+
+
+class SignedDataAcceptance(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        temp = TemporaryDirectory(prefix='sm2-signed-data-acceptance-')
+        cls.addClassCleanup(temp.cleanup)
+        cls.directory = Path(temp.name)
+        for name in ('signer', 'other'):
+            cls.openssl('genpkey', '-algorithm', 'SM2', '-out', name + '.pem')
+            public = cls.openssl('pkey', '-in', name + '.pem', '-pubout')
+            (cls.directory / (name + '-public.pem')).write_bytes(public)
+        cls.key = cls.openssl('pkey', '-pubin', '-in', 'signer-public.pem', '-outform', 'DER')[-65:]
+
+        digest = cls.openssl('dgst', '-sm3', '-binary', data=MESSAGE)
+        cls.attribute = der(0x30, bytes.fromhex('06092a864886f70d010904') + der(0x31, der(4, digest)))
+        cls.attributes = der(0xa0, cls.attribute)
+        cls.attribute_payload = der(0x31, cls.attribute)
+        cls.signatures = {
+            'direct': cls.external_signature(MESSAGE),
+            'attributes': cls.external_signature(cls.attribute_payload),
+            'other_key': cls.external_signature(MESSAGE, key='other'),
+            'other_id': cls.external_signature(MESSAGE, user_id=OTHER_ID),
+            'other_message': cls.external_signature(OTHER_MESSAGE),
+        }
+        r, s = sigdecode_der(cls.signatures['direct'], N)
+        cls.raw_direct = r.to_bytes(32, 'big') + s.to_bytes(32, 'big')
+
+    @classmethod
+    def openssl(cls, *args, data=None):
+        return subprocess.run(['openssl', *args], cwd=cls.directory, input=data, capture_output=True,
+                              check=True, timeout=15).stdout
+
+    @classmethod
+    def external_signature(cls, data, *, key='signer', user_id=USER_ID):
+        (cls.directory / 'payload.bin').write_bytes(data)
+        return cls.openssl('pkeyutl', '-sign', '-rawin', '-digest', 'sm3',
+                           '-inkey', key + '.pem', '-pkeyopt', 'distid:' + user_id.decode(),
+                           '-in', 'payload.bin')
+
+    def external_verify(self, signature, data, *, key='signer', user_id=USER_ID):
+        path = self.directory / 'signature.der'
+        path.write_bytes(signature)
+        (self.directory / 'payload.bin').write_bytes(data)
+        result = subprocess.run([
+            'openssl', 'pkeyutl', '-verify', '-pubin', '-rawin', '-digest', 'sm3',
+            '-inkey', key + '-public.pem', '-pkeyopt', 'distid:' + user_id.decode(),
+            '-sigfile', str(path), '-in', 'payload.bin',
+        ], cwd=self.directory, capture_output=True, timeout=15)
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1 and b'Signature Verification Failure' in result.stdout:
+            return False
+        self.fail(f'OpenSSL could not verify the fixture: {result.returncode} {result.stderr!r}')
+
+    def apply_adapter(self, envelope, version=2):
+        adapter = signed_data_signer(lambda *_: envelope, self.key,
+                                     signer_identifier=ISSUER_AND_SERIAL, signer_version=version)
+        return adapter(MESSAGE, USER_ID)
+
+    def test_external_signatures_bind_the_declared_payloads(self):
+        inputs = {
+            'direct': (MESSAGE, 'signer', USER_ID),
+            'attributes': (self.attribute_payload, 'signer', USER_ID),
+            'other_key': (MESSAGE, 'other', USER_ID),
+            'other_id': (MESSAGE, 'signer', OTHER_ID),
+            'other_message': (OTHER_MESSAGE, 'signer', USER_ID),
+        }
+        for name, (payload, key, user_id) in inputs.items():
+            with self.subTest(payload=name):
+                signature = self.signatures[name]
+                self.assertTrue(self.external_verify(signature, payload, key=key, user_id=user_id))
+                self.assertEqual(self.external_verify(signature, MESSAGE), name == 'direct')
+
+    def test_payment_decision_exhausts_the_declared_domain(self):
+        # These are the only three admissible version/algorithm pairs, with one
+        # row for each of the two allowed content modes.
+        expected = {
+            (1, 1, 1, None, SM2, 'direct'),
+            (1, 1, 1, MESSAGE, SM2, 'direct'),
+            (1, 1, 1, None, SM2_WITH_SM3, 'direct'),
+            (1, 1, 1, MESSAGE, SM2_WITH_SM3, 'direct'),
+            (2, 2, 1, None, SM2, 'direct'),
+            (2, 2, 1, MESSAGE, SM2, 'direct'),
+        }
+        visited, accepted = set(), set()
+        self.assertEqual(prod(map(len, AXES)), CASE_COUNT)
+        self.assertTrue(all(len(set(axis)) == len(axis) for axis in AXES))
+        for case in product(*AXES):
+            configured, signer, outer, content, algorithm, payload = case
+            with self.subTest(configured=configured, signer=signer, outer=outer,
+                              content=CONTENTS.index(content), algorithm=ALGORITHMS.index(algorithm),
+                              payload=payload):
+                self.assertTrue(all(value in axis for value, axis in zip(case, AXES, strict=True)))
+                self.assertNotIn(case, visited)
+                visited.add(case)
+                envelope = signed_data(
+                    self.signatures[payload], attached=content, version=signer, outer_version=outer,
+                    algorithm=algorithm, signed_attrs=self.attributes if payload == 'attributes' else b'',
+                )
+                if case in expected:
+                    self.assertEqual(self.apply_adapter(envelope, configured), self.raw_direct)
+                    accepted.add(case)
+                else:
+                    with self.assertRaises(ValueError):
+                        self.apply_adapter(envelope, configured)
+        self.assertEqual(len(visited), CASE_COUNT)
+        self.assertEqual(accepted, expected)
+
+    def test_single_clause_mutations_report_the_expected_failure(self):
+        signature = self.signatures['direct']
+        cases = (
+            ('§5 ContentInfo OID', {'outer_oid': DATA_OID}, 'expected SM2 SignedData content type'),
+            ('§8 table 2 digest set missing SM3', {'digest_algorithms': b''}, 'unexpected or truncated'),
+            ('§8 table 2 digest set uses wrong OID', {'digest_algorithms': SM2}, 'unexpected SignedData algorithm'),
+            ('§8 table 2 additional digest', {'digest_algorithms': SM3 + SM2}, 'trailing or unsupported'),
+            ('§8 payment content type', {'content_oid': SIGNED_DATA_OID}, 'expected SM2 data content type'),
+            ('§8 table 3 identifier form', {'sid': SKI}, 'unexpected or truncated'),
+            ('pinned signer identifier', {'sid': OTHER_ISSUER_AND_SERIAL}, 'signer identifier differs'),
+            ('§8 table 3 signer digest', {'signer_digest': SM2}, 'unexpected SignedData algorithm'),
+            ('§8 table 3 empty signature', {'signature': b''}, 'unexpected or truncated'),
+            ('§8 table 3 out-of-range scalar', {'signature': der(0x30, bytes.fromhex('020100020101'))},
+             'SM2 scalar outside the curve order'),
+        )
+        for rule, mutation, reason in cases:
+            with self.subTest(rule=rule), self.assertRaisesRegex(ValueError, reason):
+                self.apply_adapter(signed_data(**({'signature': signature} | mutation)))
+
+    def test_every_proper_prefix_and_extra_trailing_octet_is_rejected(self):
+        envelope = signed_data(self.signatures['direct'], attached=MESSAGE)
+        self.assertEqual(self.apply_adapter(envelope), self.raw_direct)
+        for end in range(len(envelope)):
+            with self.subTest(prefix=end), self.assertRaises(ValueError):
+                self.apply_adapter(envelope[:end])
+        for octet in range(256):
+            with self.subTest(trailing=octet), self.assertRaisesRegex(ValueError, 'trailing'):
+                self.apply_adapter(envelope + bytes((octet,)))
+
+    def test_der_length_and_integer_boundaries(self):
+        body = b'\x02\x01\x01'
+        for invalid, reason in (
+            (bytes.fromhex('3080') + body + b'\0\0', 'invalid DER length'),
+            (bytes.fromhex('308103') + body, 'non-minimal DER length'),
+            (bytes.fromhex('30820003') + body, 'invalid DER length'),
+            (bytes.fromhex('308302'), 'invalid DER length'),
+        ):
+            with self.subTest(invalid=invalid.hex()), self.assertRaisesRegex(ValueError, reason):
+                self.apply_adapter(invalid)
+
+        for integer in (b'', b'\x80', b'\0\x01', b'\0', N.to_bytes(33, 'big')):
+            for scalars in ((integer, b'\x01'), (b'\x01', integer)):
+                signature = der(0x30, b''.join(der(2, scalar) for scalar in scalars))
+                with self.subTest(scalars=scalars), self.assertRaisesRegex(ValueError, 'SM2 scalar'):
+                    self.apply_adapter(signed_data(signature))
+
+    def test_standard_signed_attributes_and_multiple_signers_are_outside_payment_profile(self):
+        attributes = signed_data(self.signatures['attributes'], attached=MESSAGE, signed_attrs=self.attributes)
+        with self.assertRaisesRegex(ValueError, 'signedAttrs'):
+            self.apply_adapter(attributes)
+        second = der(0x30, b'\x02\x01\x02' + OTHER_ISSUER_AND_SERIAL + SM3 + SM2
+                     + der(0x04, self.signatures['other_key']))
+        two_signers = signed_data(self.signatures['direct'], attached=MESSAGE, extra_signers=second)
+        with self.assertRaisesRegex(ValueError, 'trailing or unsupported'):
+            self.apply_adapter(two_signers)
+
+    def test_optional_metadata_has_positive_witnesses_and_documented_conformance_gaps(self):
+        self.openssl('req', '-new', '-x509', '-key', 'signer.pem', '-sm3', '-subj', '/CN=Test issuer',
+                     '-set_serial', '1', '-days', '1', '-out', 'issuer.pem')
+        cert = self.openssl('x509', '-in', 'issuer.pem', '-outform', 'DER')
+        self.openssl('x509', '-inform', 'DER', '-noout', data=cert)
+        (self.directory / 'index.txt').touch()
+        (self.directory / 'ca.cnf').write_text(
+            '[ca]\ndefault_ca = local\n[local]\ndatabase = index.txt\n'
+            'certificate = issuer.pem\nprivate_key = signer.pem\n'
+            'default_md = sm3\ndefault_crl_days = 1\n',
+            encoding='ascii',
+        )
+        crl_pem = self.openssl('ca', '-gencrl', '-config', 'ca.cnf')
+        crl = self.openssl('crl', '-outform', 'DER', data=crl_pem)
+        self.openssl('crl', '-inform', 'DER', '-noout', data=crl)
+        unsigned_attribute = der(0x30, bytes.fromhex('06092a864886f70d010902')
+                                 + der(0x31, der(0x16, b'Test metadata')))
+        cases = (
+            ('§8 table 2 certificates', 'metadata', 0xa0, cert),
+            ('§8 table 2 crls', 'metadata', 0xa1, crl),
+            ('§8 table 3 unsignedAttrs', 'unsigned_attrs', 0xa1, unsigned_attribute),
+        )
+        for rule, field, tag, valid_member in cases:
+            for conforms, member in ((True, valid_member), (False, NULL)):
+                # NULL violates the member type of all three SET OF fields.
+                # Both variants still contain the same valid payment signature.
+                with self.subTest(rule=rule, conforming_member_type=conforms):
+                    envelope = signed_data(self.signatures['direct'], attached=MESSAGE,
+                                           **{field: der(tag, member)})
+                    self.assertEqual(self.apply_adapter(envelope), self.raw_direct)
+
+
+if __name__ == '__main__':
+    unittest.main()

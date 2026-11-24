@@ -71,7 +71,7 @@ requires a verifier for that signed payload. The payment adapter rejects it
 because the current template verifies the transaction message directly.
 
 The independent [Go signer](interop/go-signer/README.md) uses
-`github.com/emmansun/gmsm@v0.45.4` for SM2/SM3 and Go's ASN.1 encoder to emit a
+`github.com/emmansun/gmsm@v0.45.4` for SM2/SM3 and Go's ASN.1 encoder to emit
 complete DER envelopes from a separate process. Attached ForkID and detached
 Chronicle OTDA payments pass in both configured versions. The suite also
 checks an independent OpenSSL SM2 signature, rejects invalid envelopes and
@@ -81,3 +81,8 @@ In the GmSSL 3.2.0 `cmssign` replay, the v1 signature verified against the SM3
 digest of the DER `ContentInfo`. The payment adapter rejected it at the
 signature check because the template requires the SM2 user ID and the raw
 payment message as signature inputs.
+
+The [SignedData acceptance fixture](signed-data-acceptance.md) checks all 540
+combinations in its declared domain and traces additional cases to the
+standard's clauses. It records the optional metadata cases that distinguish
+payment acceptance from full envelope conformance.
