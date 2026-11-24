@@ -54,6 +54,8 @@ DER `IssuerAndSerialNumber` from trusted configuration. Section 8, tables 2
 and 3 of GB/T 35275-2026 specify `SignedData.version = 1`,
 `SignerInfo.version = 2`, the issuer-and-serial identifier, and the SM2-1
 signature algorithm. These rules apply by default.
+The payment adapter accepts both the SM3 OID and the unkeyed SM3 OID used
+by Appendix A.1. The default independent Go signer uses unkeyed SM3.
 
 For a legacy direct-signing provider, pass `signer_version=1` when configuring
 the adapter. The outer version stays at 1 and the signer identifier still uses

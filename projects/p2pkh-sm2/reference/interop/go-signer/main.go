@@ -19,6 +19,7 @@ var (
 	oidData       = asn1.ObjectIdentifier{1, 2, 156, 10197, 6, 1, 4, 2, 1}
 	oidSignedData = asn1.ObjectIdentifier{1, 2, 156, 10197, 6, 1, 4, 2, 2}
 	oidSM3        = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 401}
+	oidSM3Unkeyed = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 401, 1}
 	oidSM2Sign    = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 301, 1}
 	oidSM2WithSM3 = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 501}
 )
@@ -72,9 +73,11 @@ func main() {
 	flag.Parse()
 
 	signatureAlgorithm := oidSM2Sign
+	digestAlgorithm := oidSM3Unkeyed
 	switch *signerVersion {
 	case 1:
 		signatureAlgorithm = oidSM2WithSM3
+		digestAlgorithm = oidSM3
 	case 2:
 	default:
 		fail(fmt.Errorf("SignerInfo version must be 1 or 2"))
@@ -119,12 +122,12 @@ func main() {
 	}
 	body, err := asn1.Marshal(signedData{
 		Version:          1,
-		DigestAlgorithms: []algorithmIdentifier{{Algorithm: oidSM3}},
+		DigestAlgorithms: []algorithmIdentifier{{Algorithm: digestAlgorithm}},
 		Content:          encapsulated,
 		SignerInfos: []signerInfo{{
 			Version:            *signerVersion,
 			SignerIdentifier:   identifier,
-			DigestAlgorithm:    algorithmIdentifier{Algorithm: oidSM3},
+			DigestAlgorithm:    algorithmIdentifier{Algorithm: digestAlgorithm},
 			SignatureAlgorithm: algorithmIdentifier{Algorithm: signatureAlgorithm},
 			Signature:          signature,
 		}},

@@ -29,13 +29,13 @@ SIGNED_DATA_OID = bytes.fromhex('060a2a811ccf550601040202')
 def signed_data(signature, *, attached=None, sid=ISSUER_AND_SERIAL, version=2,
                 outer_version=1, algorithm=SM2, signed_attrs=b'', unsigned_attrs=b'',
                 metadata=b'', content_oid=DATA_OID, outer_oid=SIGNED_DATA_OID,
-                digest_algorithms=SM3, signer_digest=SM3, extra_signers=b''):
+                digest_algorithms=SM3, signer_digest=SM3, extra_signers=b'', include_signer=True):
     content = content_oid
     if attached is not None:
         content += der(0xa0, der(0x04, attached))
     signer = (der(0x02, bytes((version,))) + sid + signer_digest + signed_attrs + algorithm
               + der(0x04, signature) + unsigned_attrs)
-    signers = b''.join(sorted((der(0x30, signer), extra_signers)))
+    signers = b''.join(sorted((der(0x30, signer) if include_signer else b'', extra_signers)))
     body = (der(0x02, bytes((outer_version,))) + der(0x31, digest_algorithms)
             + der(0x30, content) + metadata + der(0x31, signers))
     return der(0x30, outer_oid + der(0xa0, der(0x30, body)))

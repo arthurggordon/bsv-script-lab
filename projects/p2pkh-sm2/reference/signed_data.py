@@ -8,6 +8,7 @@ from sm2 import N, USER_ID, be32, parse_public, verify
 _DATA = bytes.fromhex('2a811ccf550601040201')
 _SIGNED_DATA = bytes.fromhex('2a811ccf550601040202')
 _SM3 = bytes.fromhex('2a811ccf55018311')
+_SM3_UNKEYED = bytes.fromhex('2a811ccf5501831101')
 _SM2_SIGNATURE = bytes.fromhex('2a811ccf5501822d01')
 _SM2_WITH_SM3 = bytes.fromhex('2a811ccf55018375')
 
@@ -57,6 +58,11 @@ class _DER:
         if self.position != len(self.data):
             raise ValueError('trailing or unsupported SignedData fields')
 
+    def take_encoded(self, tag=None):
+        start = self.position
+        self.take(tag)
+        return self.data[start:self.position]
+
 
 def _algorithm(fields, *allowed):
     algorithm = _DER(fields.take(0x30))
@@ -89,7 +95,10 @@ def _check_issuer_and_serial_number(identifier):
     outer = _DER(identifier)
     fields = _DER(outer.take(0x30))
     outer.done()
-    fields.take(0x30)  # X.509 issuer Name
+    try:
+        _check_issuer_name(fields.take(0x30))
+    except ValueError as error:
+        raise ValueError(f'invalid DER issuer Name: {error}') from error
     serial = fields.take(0x02)
     if (not serial or serial[0] & 0x80 or not any(serial)
             or (len(serial) > 1 and serial[0] == 0 and serial[1] < 128)):
@@ -97,28 +106,59 @@ def _check_issuer_and_serial_number(identifier):
     fields.done()
 
 
+def _check_issuer_name(encoded):
+    name = _DER(encoded)
+    while name.position < len(name.data):
+        rdn = name.take(0x31)
+        if not rdn:
+            raise ValueError('empty DER issuer RDN')
+        for member in _set_members(rdn, 0x30):
+            attribute = _DER(_DER(member).take(0x30))
+            _check_oid(attribute.take(0x06))
+            _check_open_value(attribute.take_encoded())
+            attribute.done()
+
+
 def _set_members(content, tag=None):
     fields = _DER(content)
     previous = b''
     while fields.position < len(content):
-        start = fields.position
-        fields.take(tag)
-        encoded = content[start:fields.position]
+        encoded = fields.take_encoded(tag)
         if encoded < previous:
             raise ValueError('DER SET OF members out of order')
         yield encoded
         previous = encoded
 
 
-def _check_attribute(encoded):
-    attribute = _DER(_DER(encoded).take(0x30))
-    oid = attribute.take(0x06)
+def _check_oid(oid):
     if (not oid or oid[-1] & 0x80
             or any(octet == 0x80 and (index == 0 or oid[index - 1] < 0x80)
                    for index, octet in enumerate(oid))):
         raise ValueError('invalid DER attribute OID')
-    for _ in _set_members(attribute.take(0x31)):
-        pass
+
+
+def _check_open_value(encoded):
+    # Walk nested TLVs iteratively. Attribute-specific value syntax remains
+    # determined by the OID, outside the payment adapter.
+    pending = [_DER(memoryview(encoded))]
+    while pending:
+        fields = pending.pop()
+        while fields.position < len(fields.data):
+            tag = fields.data[fields.position]
+            value = fields.take()
+            if tag == 0x21 or (tag == 0x01 and value not in (b'\x00', b'\xff')):
+                raise ValueError('invalid DER BOOLEAN')
+            if tag == 0x25 or (tag == 0x05 and value):
+                raise ValueError('invalid DER NULL')
+            if tag & 0x20:
+                pending.append(_DER(value))
+
+
+def _check_attribute(encoded):
+    attribute = _DER(_DER(encoded).take(0x30))
+    _check_oid(attribute.take(0x06))
+    for value in _set_members(attribute.take(0x31)):
+        _check_open_value(value)
     attribute.done()
 
 
@@ -148,7 +188,7 @@ def _direct_signature(envelope, message, signer_identifier, signer_version):
     if signed_data.take(0x02) != b'\x01':
         raise ValueError('unsupported SignedData version')
     algorithms = _DER(signed_data.take(0x31))
-    _algorithm(algorithms, _SM3)
+    _algorithm(algorithms, _SM3, _SM3_UNKEYED)
     algorithms.done()
     encapsulated = _DER(signed_data.take(0x30))
     if encapsulated.take(0x06) != _DATA:
@@ -168,11 +208,9 @@ def _direct_signature(envelope, message, signer_identifier, signer_version):
     signers.done()
     if signer.take(0x02) != bytes((signer_version,)):
         raise ValueError(f'expected SignerInfo version {signer_version}')
-    start = signer.position
-    signer.take(0x30)
-    if signer.data[start:signer.position] != signer_identifier:
+    if signer.take_encoded(0x30) != signer_identifier:
         raise ValueError('SignedData signer identifier differs from the configured signer')
-    _algorithm(signer, _SM3)
+    _algorithm(signer, _SM3, _SM3_UNKEYED)
     if signer.next_is(0xa0):
         raise ValueError('signedAttrs signatures cannot authorize the existing payment template')
     if signer_version == 2:
