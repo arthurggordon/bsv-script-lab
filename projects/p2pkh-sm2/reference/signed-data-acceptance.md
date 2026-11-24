@@ -161,9 +161,9 @@ implementation matched every expected outcome.
 
 | Normative area | Evidence | Remaining scope |
 | --- | --- | --- |
-| GB/T 20518-2018 §§5.2.2, 5.2.4.1 and 5.3.2 | Both verification entry points exercise certificate v1, v2 and v3, CRL v1 and v2, and version restrictions for unique identifiers and extensions. Certificate, CRL and revoked-entry extensions are checked for unique OIDs, DER DEFAULT omission, exactly one wrapped DER value and the supported extension payload type. | Extension-specific constraints, such as criticality requirements and relationships between extensions, require individual clause witnesses. |
+| GB/T 20518-2018 §§5.2.2, 5.2.4.1 and 5.3.2 | Both verification entry points exercise certificate v1, v2 and v3, CRL v1 and v2, and version restrictions for unique identifiers and extensions. Certificate, CRL and revoked-entry extensions are checked for unique OIDs, DER DEFAULT omission, exactly one wrapped DER value and the supported extension payload type. | Extension-specific rules are tracked below. |
 | GB/T 35275-2026 §6.9 and §8 | Schema-aware verification checks a declared open type in both attribute fields. An independent signature remains valid when an inner SET OF is unsorted or the value has the wrong type. The ASN.1 schema check rejects both cases and identifies missing schemas explicitly. | Private attribute OIDs require their declaring ASN.1 schemas. The generic verifier alone leaves implicit tags and other schema-dependent constraints unresolved. |
-| GB/T 35275-2026 §8 signer-set grammar | Signer verification exercises one and multiple signers with mixed direct and attribute signing. Zero signers fail signature verification. | The empty `SignerInfos` set is an ASN.1 framing case to cover in format-only conformance. |
+| GB/T 35275-2026 §8 signer-set grammar | Format validation accepts empty `SignerInfos` with attached, empty-attached and detached content and an empty or populated digest set. A wrong tag fails the format check. Signer verification covers one and multiple signers with mixed direct and attribute signing and requires at least one authenticated signature. | Covered for the declared framing and cardinality cases. |
 | GB/T 35275-2026 §§6.3–6.4 and §8 signed input | SM3 and SM2-1 interoperability is exercised with OpenSSL and the independent Go signer. CMS-style DER SET signing is covered for signed attributes. | The cited algorithm identifiers and Appendix A.1 give interoperability evidence. Envelope parameter syntax and the signed-attribute tagging convention still need a normative disposition for full conformance. |
 
 The v2 certificate structural test uses `asn1crypto` because
@@ -174,6 +174,42 @@ An independent OpenSSL replay exercised 74 checks with its own DER
 construction, including a v2 certificate with a unique identifier, valid
 and duplicate private extensions, CRL version dependencies, and open
 values with DER time and RELATIVE-OID encodings.
+
+### Format and X.509 profile witnesses
+
+`validate_signed_data_format` shares parsing with the signature verifier
+and applies the following self-contained embedded-certificate and CRL
+profile rules. Certificate signatures, certificate paths and revocation
+decisions require trusted inputs at the application layer.
+
+| Rule | Executable evidence |
+| --- | --- |
+| GB/T 20518-2018 §§5.2.3.6, 5.2.4.2.9 and 5.2.4.2.12 | An empty subject requires a critical, nonempty SAN. A CA requires a nonempty subject and critical basicConstraints. Encoding the default `cA FALSE` explicitly fails DER validation. |
+| GB/T 20518-2018 §§5.2.4.2.2–5.2.4.2.4 and 5.2.4.2.13 | AKI and SKI are noncritical when present. A CA requires SKI and keyCertSign. keyCertSign and nameConstraints require a CA certificate. |
+| GB/T 20518-2018 §5.2.4.2.8 | A policy mapping can map two ordinary OIDs. Both positions reject anyPolicy. |
+| GB/T 20518-2018 §§5.3.4.1–5.3.4.5 | CRL AKI and cRLNumber are noncritical, issuerAltName is nonempty, and deltaCRLIndicator and issuingDistributionPoint are critical. Both number fields accept nonnegative DER integers of at most 20 content octets. |
+
+Remaining X.509 scope includes the other extension-specific rules, issuer
+and subject relationships, and the ordering and scope of delta and complete
+CRLs across objects. The certificate fixture uses independently signed
+metadata to isolate each rejection from the signature bytes.
+The independent OpenSSL replay now runs 92 checks using a separate DER
+constructor, including empty signer sets, an empty subject with SAN, CA
+key usage, and criticality of the delta CRL indicator.
+
+The national standard catalog and the published texts were rechecked for
+the two signature-encoding questions. The GB/T 33560 identifier assignments
+and the explicit NULLs in the Appendix A.1 envelope provide OID and
+interoperability evidence. The X.690 rule for IMPLICIT describes how to
+encode the tagged field. RFC 5652 §5.4 separately specifies the universal
+SET tag when producing the CMS signing input. GB/T 35275-2026 §8 names
+the DER encoding of `signedAttrs`, and Appendix A.1 supplies a direct
+signature. The acceptance record keeps the parameter and signing-tag
+questions open pending an authoritative disposition for this standard.
+[GB/T 35275-2026](https://std.samr.gov.cn/gb/search/gbDetailedCNF?id=511EBC5968889318E06397BE0A0AFBD5) ·
+[GB/T 33560-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=9BF813CEEAFB58A19534FF861465D8FD) ·
+[ITU-T X.690 §8.14](https://www.itu.int/rec/T-REC-X.690/en) ·
+[RFC 5652 §5.4](https://www.rfc-editor.org/rfc/rfc5652#section-5.4)
 
 ## Appendix A.1 audit
 

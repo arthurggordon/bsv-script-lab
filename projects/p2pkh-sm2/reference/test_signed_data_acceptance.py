@@ -12,7 +12,7 @@ from asn1crypto.core import Integer, SetOf
 from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
 from ecdsa.der import read_length, remove_integer, remove_sequence
 from ecdsa.util import sigdecode_der
-from signed_data import MissingAttributeSchema, signed_data_signer, verify_signed_data
+from signed_data import MissingAttributeSchema, signed_data_signer, validate_signed_data_format, verify_signed_data
 from sm2 import N
 from test_signed_data import (
     DATA_OID, ISSUER_AND_SERIAL, OTHER_ISSUER_AND_SERIAL, SIGNED_DATA_OID,
@@ -58,7 +58,7 @@ CLAUSE_EVIDENCE = {
                               'x509_time', 'x509_signature', 'x509_extensions'),
     '8.table2.crls': ('metadata', 'crl_next_update', 'x509_algorithms', 'x509_parameters',
                       'x509_time', 'x509_signature', 'x509_extensions'),
-    '8.table2.signerInfos': ('signer_count_policy', 'verify_all_signers'),
+    '8.table2.signerInfos': ('signer_count_policy', 'verify_all_signers', 'format_only'),
     '8.table3.version': ('payment_matrix', 'version_octet'),
     '8.table3.issuerAndSerialNumber': ('issuer', 'single_field'),
     '8.table3.digestAlgorithm': ('single_field',),
@@ -73,10 +73,19 @@ CLAUSE_EVIDENCE = {
     'GB/T 20518-2018.5.2.2.SM2ParametersAndSignatureValue': ('x509_parameters', 'x509_signature'),
     'GB/T 20518-2018.5.2.2.VersionDependencies': ('x509_extensions',),
     'GB/T 20518-2018.5.2.4.1.Extensions': ('x509_extensions',),
+    'GB/T 20518-2018.5.2.3.6.Subject': ('certificate_profile',),
+    'GB/T 20518-2018.5.2.4.2.2.AuthorityKeyIdentifier': ('certificate_profile',),
+    'GB/T 20518-2018.5.2.4.2.3.SubjectKeyIdentifier': ('certificate_profile',),
+    'GB/T 20518-2018.5.2.4.2.4.KeyUsage': ('certificate_profile',),
+    'GB/T 20518-2018.5.2.4.2.8.PolicyMappings': ('certificate_profile',),
+    'GB/T 20518-2018.5.2.4.2.9.SubjectAltName': ('certificate_profile',),
+    'GB/T 20518-2018.5.2.4.2.12.BasicConstraints': ('certificate_profile',),
+    'GB/T 20518-2018.5.2.4.2.13.NameConstraints': ('certificate_profile',),
     'GB/T 20518-2018.5.2.3.2.SerialNumber': ('certificate_fields',),
     'GB/T 20518-2018.5.2.3.3.Signature': ('x509_algorithms',),
     'GB/T 20518-2018.5.2.3.4.Issuer': ('certificate_fields',),
     'GB/T 20518-2018.5.3.3.2.Signature': ('x509_algorithms',),
+    'GB/T 20518-2018.5.3.4.1-5.CRLExtensionProfile': ('crl_profile',),
     'GB/T 20518-2018.5.2.3.5.2.ValidityTime': ('x509_time',),
     'GB/T 20518-2018.5.3.2.SM2ParametersAndSignatureValue': ('x509_parameters', 'x509_signature'),
     'GB/T 20518-2018.5.3.3.4.thisUpdate': ('x509_time',),
@@ -261,6 +270,36 @@ class SignedDataAcceptance(SignedDataFixtures):
                 with self.subTest(delta=delta, entry_point=entry_point.__name__), self.assertRaisesRegex(ValueError, error):
                     entry_point(changed)
         COMPLETED_WITNESSES.add('version_octet')
+
+    def test_format_only_signer_cardinality_and_independent_signature_checks(self):
+        signature = self.signatures['direct']
+        for content, algorithms in product((None, b'', MESSAGE), (b'', SM3)):
+            with self.subTest(content=content, digest_algorithms=bool(algorithms)):
+                envelope = signed_data(signature, attached=content, include_signer=False, digest_algorithms=algorithms)
+                validate_signed_data_format(envelope)
+                with self.assertRaisesRegex(ValueError, 'at least one signer'):
+                    verify_signed_data(envelope, {}, detached_content=MESSAGE if content is None else None)
+                with self.assertRaises(ValueError):
+                    self.apply_adapter(envelope)
+                self.assertEqual(envelope[-2:], b'\x31\x00')
+                with self.assertRaises(ValueError):
+                    validate_signed_data_format(envelope[:-2] + b'\x30\x00')
+        with self.assertRaisesRegex(ValueError, 'expected SM3 in digestAlgorithms'):
+            validate_signed_data_format(signed_data(signature, attached=MESSAGE, digest_algorithms=b''))
+
+        two_signers = signed_data(signature, attached=MESSAGE, extra_signers=der(
+            0x30, b'\x02\x01\x02' + OTHER_ISSUER_AND_SERIAL + SM3 + SM2 + der(0x04, signature)))
+        validate_signed_data_format(two_signers)
+        validate_signed_data_format(signed_data(signature))  # Detached content is not needed for format.
+        with self.assertRaisesRegex(ValueError, 'invalid SignedData signature'):
+            envelope = signed_data(self.signatures['other_key'], attached=MESSAGE)
+            validate_signed_data_format(envelope)
+            self.verify_attached(envelope)
+
+        attrs = der(0xa0, der(0x30, MESSAGE_DIGEST_OID + der(0x31, der(0x04, bytes(31)))))
+        with self.assertRaisesRegex(ValueError, 'messageDigest must contain 32 SM3 octets'):
+            validate_signed_data_format(signed_data(signature, signed_attrs=attrs))
+        COMPLETED_WITNESSES.add('format_only')
 
     def test_payment_decision_exhausts_the_declared_domain(self):
         expected = {
@@ -1006,6 +1045,116 @@ class SignedDataReview(SignedDataFixtures):
                         with self.assertRaisesRegex(ValueError, r'invalid DER value for SignedData attribute 1\.2\.3\.4'):
                             verify_signed_data(envelope, self.trusted_signers, attribute_schemas=schemas)
         COMPLETED_WITNESSES.add('attribute_schemas')
+
+    def test_chapter_8_certificate_profile_constraints(self):
+        certificate, _ = self.issue_certificate_and_crl()
+        cert_body, algorithm = x509_signed_parts(certificate)
+        fields = tuple(encoded_fields(cert_body))
+        certificate_prefix = b''.join(fields[:5])
+        subject, spki = fields[5:7]
+
+        def extension(number, value, *, critical=False):
+            critical_field = b'\x01\x01\xff' if critical else b''
+            return der(0x30, der(0x06, bytes((0x55, 0x1d, number))) + critical_field + der(0x04, value))
+
+        ski = extension(14, der(0x04, b'test subject key identifier'))
+        critical_ski = extension(14, der(0x04, b'test subject key identifier'), critical=True)
+        aki_value = der(0x30, der(0x80, b'test authority key identifier'))
+        aki = extension(35, aki_value)
+        critical_aki = extension(35, aki_value, critical=True)
+        ca_value = der(0x30, b'\x01\x01\xff')
+        basic = extension(19, ca_value, critical=True)
+        noncritical_basic = extension(19, ca_value)
+        explicit_non_ca = extension(19, der(0x30, b'\x01\x01\x00'))
+        key_cert_sign = extension(15, der(0x03, b'\x02\x04'), critical=True)
+        san_value = der(0x30, der(0x82, b'subject.example'))
+        critical_san = extension(17, san_value, critical=True)
+        noncritical_san = extension(17, san_value)
+        empty_san = extension(17, der(0x30, b''), critical=True)
+        subtree = der(0x30, der(0x82, b'subject.example'))
+        constraints = extension(30, der(0x30, der(0xa0, subtree)), critical=True)
+        any_policy = bytes.fromhex('0604551d2000')
+        left_policy = bytes.fromhex('06032a0304')
+        right_policy = bytes.fromhex('06032a0305')
+
+        def mapping(left, right):
+            return extension(33, der(0x30, der(0x30, left + right)))
+
+        ca = basic + ski + key_cert_sign
+        cases = (
+            ('end entity', subject, aki, None),
+            ('empty subject with critical SAN', b'\x30\x00', critical_san, None),
+            ('CA with constraints and mapping', subject, ca + constraints + mapping(left_policy, right_policy), None),
+            ('critical AKI', subject, critical_aki, 'authorityKeyIdentifier must be noncritical'),
+            ('critical SKI', subject, critical_ski, 'subjectKeyIdentifier must be noncritical'),
+            ('empty subject without SAN', b'\x30\x00', ski, 'empty certificate subject'),
+            ('empty subject with noncritical SAN', b'\x30\x00', noncritical_san, 'requires critical subjectAltName'),
+            ('empty SAN', subject, empty_san, 'subjectAltName must contain at least one name'),
+            ('empty CA subject', b'\x30\x00', ca + critical_san, 'CA certificate requires a nonempty subject'),
+            ('noncritical CA constraints', subject, noncritical_basic + ski + key_cert_sign,
+             'CA basicConstraints must be critical'),
+            ('CA without SKI', subject, basic + key_cert_sign, 'requires subjectKeyIdentifier'),
+            ('CA without keyCertSign', subject, basic + ski, 'requires keyCertSign'),
+            ('keyCertSign without CA', subject, ski + key_cert_sign, 'keyCertSign requires basicConstraints'),
+            ('explicit cA default', subject, explicit_non_ca, 'cA FALSE must be omitted'),
+            ('name constraints on end entity', subject, ski + constraints, 'nameConstraints requires a CA certificate'),
+            ('anyPolicy as issuer policy', subject, ca + mapping(any_policy, right_policy), 'must not contain anyPolicy'),
+            ('anyPolicy as subject policy', subject, ca + mapping(left_policy, any_policy), 'must not contain anyPolicy'),
+        )
+        for label, name, extensions, error in cases:
+            body = certificate_prefix + name + spki + der(0xa3, der(0x30, extensions))
+            cert = self.sign_review_metadata(body, algorithm)
+            envelope = signed_data(self.signatures['direct'], attached=MESSAGE, include_signer=False,
+                                   digest_algorithms=b'', metadata=der(0xa0, cert))
+            with self.subTest(case=label):
+                if error is None:
+                    validate_signed_data_format(envelope)
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        validate_signed_data_format(envelope)
+        COMPLETED_WITNESSES.add('certificate_profile')
+
+    def test_chapter_8_crl_profile_constraints(self):
+        _, crl = self.issue_certificate_and_crl(version_2_crl=True)
+        body, algorithm = x509_signed_parts(crl)
+        fields = tuple(encoded_fields(body))
+        self.assertEqual(fields[0], b'\x02\x01\x01')
+        prefix = b''.join(fields[:5])
+
+        def extension(number, value, *, critical=False):
+            critical_field = b'\x01\x01\xff' if critical else b''
+            return der(0x30, der(0x06, bytes((0x55, 0x1d, number))) + critical_field + der(0x04, value))
+
+        number = extension(20, der(0x02, b'\x06'))
+        delta = extension(27, der(0x02, b'\x05'), critical=True)
+        distribution = der(0x30, der(0x81, b'\xff'))
+        cases = (
+            ('complete CRL', number + extension(28, distribution, critical=True), None),
+            ('delta CRL', number + delta, None),
+            ('twenty-octet CRL number', extension(20, der(0x02, b'\x7f' + b'\xff' * 19)), None),
+            ('critical AKI', extension(35, der(0x30, der(0x80, b'test key identifier')), critical=True),
+             'authorityKeyIdentifier must be noncritical'),
+            ('empty issuer alternative name', extension(18, der(0x30, b'')), 'issuerAltName must contain'),
+            ('critical CRL number', extension(20, der(0x02, b'\x01'), critical=True), 'cRLNumber must be noncritical'),
+            ('oversized CRL number', extension(20, der(0x02, b'\x00\x80' + bytes(19))),
+             'cRLNumber requires a nonnegative DER INTEGER of at most 20 octets'),
+            ('noncritical delta', number + extension(27, der(0x02, b'\x05')), 'deltaCRLIndicator must be critical'),
+            ('oversized delta base', number + extension(27, der(0x02, b'\x01' + bytes(20)), critical=True),
+             'deltaCRLIndicator requires a nonnegative DER INTEGER of at most 20 octets'),
+            ('noncritical distribution point', number + extension(28, distribution),
+             'issuingDistributionPoint must be critical'),
+        )
+        for label, extensions, error in cases:
+            member = self.sign_review_metadata(prefix + der(0xa0, der(0x30, extensions)), algorithm)
+            envelope = signed_data(self.signatures['direct'], attached=MESSAGE, include_signer=False,
+                                   digest_algorithms=b'', metadata=der(0xa1, member))
+            with self.subTest(case=label):
+                if error is None:
+                    validate_signed_data_format(envelope)
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        validate_signed_data_format(envelope)
+        COMPLETED_WITNESSES.add('crl_profile')
 
     def check_extension_envelope(self, tag, body, algorithm, error=None):
         encoded = self.sign_review_metadata(body, algorithm)

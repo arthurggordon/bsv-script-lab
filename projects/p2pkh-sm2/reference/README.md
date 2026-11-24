@@ -115,3 +115,11 @@ DER re-encoding. `messageDigest` has a built-in OCTET STRING check.
 `MissingAttributeSchema` identifies an encountered OID whose schema is
 unavailable. The configured schema defines the type and any application
 constraints. [Acceptance evidence and remaining scope](signed-data-acceptance.md#additional-chapter-8-evidence)
+
+Use `validate_signed_data_format(envelope, attribute_schemas=...)` for
+Chapter 8 framing and the implemented X.509 extension profile checks.
+This entry point can parse a certificate-only envelope with an empty
+`SignerInfos` set, and it can parse a detached envelope without its content.
+It returns normally when the format checks pass. Use `verify_signed_data`
+with authenticated signer keys and any detached content to verify a
+signature and obtain the signed bytes.
