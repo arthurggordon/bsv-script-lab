@@ -53,29 +53,38 @@ CLAUSE_EVIDENCE = {
     '8.table2.version': ('payment_matrix', 'version_octet'),
     '8.table2.digestAlgorithms': ('digest_set', 'single_field'),
     '8.table2.encapContentInfo': ('payment_matrix', 'single_field'),
-    '8.table2.certificates': ('metadata', 'certificate_fields', 'x509_algorithms'),
-    '8.table2.crls': ('metadata', 'crl_next_update', 'x509_algorithms'),
+    '8.table2.certificates': ('metadata', 'certificate_fields', 'x509_algorithms', 'x509_parameters',
+                              'x509_time', 'x509_signature'),
+    '8.table2.crls': ('metadata', 'crl_next_update', 'x509_algorithms', 'x509_parameters',
+                      'x509_time', 'x509_signature'),
     '8.table2.signerInfos': ('signer_count_policy', 'verify_all_signers'),
     '8.table3.version': ('payment_matrix', 'version_octet'),
     '8.table3.issuerAndSerialNumber': ('issuer', 'single_field'),
     '8.table3.digestAlgorithm': ('single_field',),
-    '8.table3.signedAttrs': ('signed_attrs_policy', 'verify_signed_attributes', 'open_value_der'),
+    '8.table3.signedAttrs': ('signed_attrs_policy', 'verify_signed_attributes', 'open_value_der', 'open_value_forms'),
     '8.table3.signatureAlgorithm': ('payment_matrix',),
     '8.table3.signature': ('external_signature', 'der_scalars'),
-    '8.table3.unsignedAttrs': ('metadata', 'unsigned_attribute', 'open_value_der'),
+    '8.table3.unsignedAttrs': ('metadata', 'unsigned_attribute', 'open_value_der', 'open_value_forms'),
     '8.direct_signature': ('external_signature', 'payment_matrix'),
     '8.signed_attrs_signature': ('signed_attrs_policy', 'verify_signed_attributes'),
     '8.messageDigest': ('verify_signed_attributes',),
     'A.1.example': ('appendix_a1',),
+    'GB/T 20518-2018.5.2.2.SM2ParametersAndSignatureValue': ('x509_parameters', 'x509_signature'),
     'GB/T 20518-2018.5.2.3.2.SerialNumber': ('certificate_fields',),
     'GB/T 20518-2018.5.2.3.3.Signature': ('x509_algorithms',),
     'GB/T 20518-2018.5.2.3.4.Issuer': ('certificate_fields',),
     'GB/T 20518-2018.5.3.3.2.Signature': ('x509_algorithms',),
-    'GB/T 20518-2018.5.3.3.5.nextUpdate': ('crl_next_update',),
+    'GB/T 20518-2018.5.2.3.5.2.ValidityTime': ('x509_time',),
+    'GB/T 20518-2018.5.3.2.SM2ParametersAndSignatureValue': ('x509_parameters', 'x509_signature'),
+    'GB/T 20518-2018.5.3.3.4.thisUpdate': ('x509_time',),
+    'GB/T 20518-2018.5.3.3.5.nextUpdate': ('crl_next_update', 'x509_time'),
     'X.690.8.3.Integer': ('unsigned_attribute',),
+    'X.690.8.4.Enumerated': ('open_value_forms',),
     'X.690.8.6.2.BitString': ('open_value_der',),
     'X.690.8.19.ObjectIdentifier': ('open_value_der',),
-    'X.690.10.2.StringEncodingForms': ('open_value_der',),
+    'X.690.8.9-8.12.SequenceAndSet': ('open_value_forms',),
+    'X.690.8.23.10.UTF8String': ('open_value_forms',),
+    'X.690.10.2.StringEncodingForms': ('open_value_der', 'open_value_forms'),
     'X.690.11.2.1.UnusedBits': ('open_value_der',),
 }
 COMPLETED_WITNESSES = set()
@@ -711,13 +720,13 @@ class SignedDataAcceptance(SignedDataFixtures):
 
 
 class SignedDataReview(SignedDataFixtures):
-    """Regression witnesses for the open findings in the review of 4bcc9d5."""
+    """Regression witnesses for the findings in the review of 4bcc9d5."""
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         cls.controls = {}
-        cls.rejection_cases = {rule: {} for rule in ('parameters', 'time', 'attributes')}
+        cls.rejection_cases = {rule: {} for rule in ('parameters', 'time', 'attributes', 'signature')}
         if not cls.external_verify(cls.signatures['direct'], MESSAGE):
             raise AssertionError('invalid OpenSSL payment signature in review fixtures')
         cls.check_x509_fixtures()
@@ -762,6 +771,14 @@ class SignedDataReview(SignedDataFixtures):
             updated = cls.replace_fixture_field(body, der(0x30, algorithm), der(0x30, with_null))
             cls.record_review_metadata('parameters', kind, tag, cls.sign_review_metadata(updated, with_null),
                                        conforming=False)
+            for signature_type, bits, raw in (
+                ('wrong signature tag', 0, der(0x04, b'test-only')),
+                ('zero signature scalar', 0, bytes.fromhex('3006020100020101')),
+                ('unaligned signature', 1, bytes.fromhex('3006020101020102')),
+            ):
+                member = der(0x30, der(0x30, body) + der(0x30, algorithm) + der(0x03, bytes((bits,)) + raw))
+                cls.record_review_metadata('signature', f'{kind} {signature_type}', tag, member,
+                                           conforming=False)
 
             def encode_dates(values):
                 data = b''.join(values)
@@ -814,7 +831,11 @@ class SignedDataReview(SignedDataFixtures):
             ('SEQUENCE form', '3000', '1000'),
             ('SET form', '3100', '1100'),
             ('UTF8String form', '0c0141', '2c030c0141'),
+            ('UTF8String repertoire', '0c03e4b8ad', '0c02c080'),
+            ('PrintableString form', '130141', '3303130141'),
             ('ENUMERATED length', '0a0101', '0a00'),
+            ('ENUMERATED minimal integer', '0a020080', '0a020001'),
+            ('ENUMERATED form', '0a0101', '2a030a0101'),
         )
         for name, valid, invalid in cases:
             for conforming, value in ((True, valid), (False, invalid)):
@@ -835,24 +856,26 @@ class SignedDataReview(SignedDataFixtures):
                                            signed, conforming=conforming, signed_attributes=True)
 
     def test_review_controls_and_case_counts(self):
-        self.assertEqual(len(self.controls), 36)
+        self.assertEqual(len(self.controls), 60)
         self.assertEqual({rule: len(cases) for rule, cases in self.rejection_cases.items()},
-                         {'parameters': 4, 'time': 8, 'attributes': 24})
+                         {'parameters': 4, 'time': 8, 'attributes': 48, 'signature': 12})
         self.assertEqual([case for case, accepted in self.controls.items() if not accepted], [])
 
-    # Fixture generation, signature checks and endpoint calls run in
-    # setUpClass. Only an incorrect acceptance can cause an expected failure.
-    @unittest.expectedFailure
     def test_rejects_null_sm2_parameters_in_certificates_and_crls(self):
         self.assertEqual([case for case, accepted in self.rejection_cases['parameters'].items() if accepted], [])
+        COMPLETED_WITNESSES.add('x509_parameters')
 
-    @unittest.expectedFailure
     def test_rejects_pre_2050_generalized_time_in_certificates_and_crls(self):
         self.assertEqual([case for case, accepted in self.rejection_cases['time'].items() if accepted], [])
+        COMPLETED_WITNESSES.add('x509_time')
 
-    @unittest.expectedFailure
-    def test_rejects_non_der_sequence_set_utf8_and_enumerated_attribute_values(self):
+    def test_rejects_non_der_sequence_set_string_and_enumerated_attribute_values(self):
         self.assertEqual([case for case, accepted in self.rejection_cases['attributes'].items() if accepted], [])
+        COMPLETED_WITNESSES.add('open_value_forms')
+
+    def test_rejects_invalid_sm2_signature_values_in_certificates_and_crls(self):
+        self.assertEqual([case for case, accepted in self.rejection_cases['signature'].items() if accepted], [])
+        COMPLETED_WITNESSES.add('x509_signature')
 
 
 def check_traceability():

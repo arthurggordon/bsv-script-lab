@@ -10,7 +10,14 @@ _SIGNED_DATA = bytes.fromhex('2a811ccf550601040202')
 _SM3 = bytes.fromhex('2a811ccf55018311')
 _SM3_UNKEYED = bytes.fromhex('2a811ccf5501831101')
 _SM2_SIGNATURE = bytes.fromhex('2a811ccf5501822d01')
+_SM2_WITH_SM3 = bytes.fromhex('2a811ccf55018375')
 _MESSAGE_DIGEST = bytes.fromhex('2a864886f70d010904')
+# X.690 §10.2 forbids the constructed encoding of restricted character strings.
+_CONSTRUCTED_CHARACTER_STRINGS = frozenset((
+    0x2c,                          # UTF8String
+    0x32, 0x33, 0x34, 0x35, 0x36,   # NumericString through IA5String
+    0x39, 0x3a, 0x3b, 0x3c, 0x3e,   # GraphicString through UniversalString, then BMPString
+))
 
 
 class _DER:
@@ -183,6 +190,17 @@ def _check_open_value(encoded):
                 _check_oid(value)
             if tag == 0x26:
                 raise ValueError('invalid DER attribute OID')
+            if tag == 0x2a or (tag == 0x0a and not _minimal_integer(value)):
+                raise ValueError('invalid DER ENUMERATED')
+            if tag in (0x10, 0x11):
+                raise ValueError('DER SEQUENCE and SET must be constructed')
+            if tag in _CONSTRUCTED_CHARACTER_STRINGS:
+                raise ValueError('DER character strings must be primitive')
+            if tag == 0x0c:
+                try:
+                    bytes(value).decode('utf-8')
+                except UnicodeDecodeError as error:
+                    raise ValueError('invalid DER UTF8String') from error
             if tag & 0x20:
                 pending.append(_DER(value))
 
@@ -198,9 +216,31 @@ def _attribute(encoded):
     return oid, values
 
 
-def _check_matching_signature_algorithms(tbs, outer):
-    if tbs.take_encoded(0x30) != outer.take_encoded(0x30):
+def _check_x509_signature(tbs, outer):
+    inner = tbs.take_encoded(0x30)
+    if inner != outer.take_encoded(0x30):
         raise ValueError('inner and outer signature algorithm identifiers differ')
+    algorithm = _DER(_DER(inner).take(0x30))
+    oid = algorithm.take(0x06)
+    if oid in (_SM2_SIGNATURE, _SM2_WITH_SM3):
+        if algorithm.position != len(algorithm.data):
+            raise ValueError('SM2 certificate and CRL signature algorithm parameters must be absent')
+        signature_bits = outer.take(0x03)
+        if not signature_bits or signature_bits[0] != 0:
+            raise ValueError('SM2 certificate and CRL signature BIT STRING must be octet-aligned')
+        try:
+            _signature(signature_bits[1:])
+        except ValueError as error:
+            raise ValueError(f'invalid X.509 SM2Signature: {error}') from error
+
+
+def _check_x509_time(fields):
+    utc = fields.next_is(0x17)
+    value = fields.take(0x17 if utc else 0x18)
+    if len(value) != (13 if utc else 15) or value[-1:] != b'Z' or not value[:-1].isdigit():
+        raise ValueError('invalid X.509 time encoding, expected UTC with seconds')
+    if not utc and value[:4] < b'2050':
+        raise ValueError('X.509 dates before 2050 must use UTCTime')
 
 
 def _check_certificate(encoded):
@@ -211,7 +251,12 @@ def _check_certificate(encoded):
     serial = tbs.take(0x02)
     if not _minimal_integer(serial) or serial[0] & 0x80 or not any(serial) or len(serial) > 20:
         raise ValueError('expected a positive certificate serial number of at most 20 octets')
-    _check_matching_signature_algorithms(tbs, fields)
+    _check_x509_signature(tbs, fields)
+    tbs.take(0x30)  # Issuer.
+    validity = _DER(tbs.take(0x30))
+    _check_x509_time(validity)  # notBefore.
+    _check_x509_time(validity)  # notAfter.
+    validity.done()
     certificate = load_der_x509_certificate(encoded)
     if not certificate.issuer.rdns:
         raise ValueError('empty certificate issuer Name')
@@ -222,7 +267,11 @@ def _check_crl(encoded):
     tbs = _DER(fields.take(0x30))
     if tbs.next_is(0x02):
         tbs.take(0x02)  # Optional version precedes the signature algorithm.
-    _check_matching_signature_algorithms(tbs, fields)
+    _check_x509_signature(tbs, fields)
+    tbs.take(0x30)  # Issuer.
+    _check_x509_time(tbs)  # thisUpdate.
+    if tbs.next_is(0x17) or tbs.next_is(0x18):
+        _check_x509_time(tbs)  # nextUpdate.
     crl = load_der_x509_crl(encoded)
     if not crl.issuer.rdns:
         raise ValueError('empty CRL issuer Name')

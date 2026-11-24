@@ -128,27 +128,33 @@ algorithm. The GB/T 33560 identifier tables supply the SM3, unkeyed SM3
 and SM2-1 OIDs. Appendix A.1 demonstrates explicit DER NULL for the
 unkeyed SM3 and SM2-1 fields in the envelope. The envelope verification
 profile accepts absent parameters or empty DER NULL and tests rejection
-of nonempty NULL, other parameter tags and repeated parameters. The
-certificate-specific rules for signature algorithm identifiers have their
-own context. [GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
+of nonempty NULL, other parameter tags and repeated parameters. Embedded SM2
+certificates and CRLs require absent parameters in their own signature
+algorithm identifiers under GB/T 20518-2018. [GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
 [GB/T 33560-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=9BF813CEEAFB58A19534FF861465D8FD)
 
-## Open findings from the review of `4bcc9d5`
+## Regression checks from the review of `4bcc9d5`
 
-`SignedDataReview` runs 36 conforming controls and 36 rejection cases.
-The three rejection tests currently report expected failures. Each expects
-every case to raise `ValueError`, and records any case that returns the
-valid payment signature or content. Fixture setup checks the OpenSSL
-signatures and runs every case before these assertions. The normal control
-test checks the number of cases and requires every conforming sample to
-pass. An unexpected success signals that the corresponding expected-failure
-marker should be removed.
+`SignedDataReview` runs 60 conforming controls and 72 rejection cases.
+Each rejection test requires every case to raise `ValueError` and reports
+any case that returns the valid payment signature or content. Fixture setup
+checks the OpenSSL signatures and runs every case before these assertions.
+The control test checks the number of cases and requires every conforming
+sample to pass.
 
-| Rule | Open rejection cases |
+| Rule | Rejection cases |
 | --- | --- |
 | GB/T 20518-2018 §§5.2.2 and 5.3.2 | Four checks for explicit NULL in both SM2 signature algorithm identifiers of a certificate or CRL. Both verification entry points also accept controls with omitted parameters. |
+| GB/T 20518-2018 §§5.2.2 and 5.3.2 and GB/T 35276 §7.3 | Twelve checks reject an incorrect signature tag, a zero scalar or a non-octet-aligned BIT STRING in the embedded signature value of an SM2 certificate or CRL. |
 | GB/T 20518-2018 §§5.2.3.5.2 and 5.3.3.4–5.3.3.5 | Eight checks replace one 2049 time at a time with GeneralizedTime, covering certificate `notBefore` and `notAfter` and CRL `thisUpdate` and `nextUpdate`. Controls encode both fields as UTCTime in 2049 and GeneralizedTime in 2050. |
-| X.690 §§8.4, 8.9–8.12 and 10.2 | Twenty-four checks cover primitive SEQUENCE and SET, constructed UTF8String and zero-length ENUMERATED. Each case runs as a direct and nested value through payment `unsignedAttrs` and general `unsignedAttrs` and `signedAttrs`. |
+| X.690 §§8.4, 8.9–8.12, 8.23.10 and 10.2 | Forty-eight checks cover primitive SEQUENCE and SET, constructed UTF8String and PrintableString, overlong UTF-8, and empty, nonminimal or constructed ENUMERATED. Each case runs as a direct and nested value through payment `unsignedAttrs` and general `unsignedAttrs` and `signedAttrs`. |
+
+The completed fixture reproduced incorrect acceptance of all 72 negative
+cases on `3197dd9`, while its 60 controls passed. A separate OpenSSL replay
+constructed 57 checks without the fixture helpers, including a mixed
+2049/2050 validity interval, detached content, an RSA certificate with NULL
+parameters, and independently signed attribute sets. The repaired
+implementation matched every expected outcome.
 
 ## Appendix A.1 audit
 
