@@ -1,5 +1,7 @@
 """SignedData profiles for direct SM2 payment signatures."""
 
+from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
+
 from sm2 import N, USER_ID, be32, parse_public, verify
 
 
@@ -18,12 +20,24 @@ class _DER:
     def next_is(self, tag):
         return self.position < len(self.data) and self.data[self.position] == tag
 
-    def take(self, tag):
+    def take(self, tag=None):
         start = self.position
-        if not self.next_is(tag) or start + 2 > len(self.data):
+        if start == len(self.data) or (tag is not None and not self.next_is(tag)):
             raise ValueError('unexpected or truncated SignedData DER field')
-        length = self.data[start + 1]
-        content = start + 2
+        first = self.data[start]
+        length_at = start + 1
+        if first in (0x00, 0x20):
+            raise ValueError('invalid DER tag')
+        if first & 0x1f == 0x1f:
+            if length_at == len(self.data) or self.data[length_at] < 31 or self.data[length_at] == 0x80:
+                raise ValueError('invalid DER tag')
+            while length_at < len(self.data) and self.data[length_at] & 0x80:
+                length_at += 1
+            length_at += 1
+        if length_at >= len(self.data):
+            raise ValueError('unexpected or truncated SignedData DER field')
+        length = self.data[length_at]
+        content = length_at + 1
         if length >= 128:
             width = length & 127
             encoded_length = self.data[content:content + width]
@@ -83,6 +97,44 @@ def _check_issuer_and_serial_number(identifier):
     fields.done()
 
 
+def _set_members(content, tag=None):
+    fields = _DER(content)
+    previous = b''
+    while fields.position < len(content):
+        start = fields.position
+        fields.take(tag)
+        encoded = content[start:fields.position]
+        if encoded < previous:
+            raise ValueError('DER SET OF members out of order')
+        yield encoded
+        previous = encoded
+
+
+def _check_attribute(encoded):
+    attribute = _DER(_DER(encoded).take(0x30))
+    oid = attribute.take(0x06)
+    if (not oid or oid[-1] & 0x80
+            or any(octet == 0x80 and (index == 0 or oid[index - 1] < 0x80)
+                   for index, octet in enumerate(oid))):
+        raise ValueError('invalid DER attribute OID')
+    for _ in _set_members(attribute.take(0x31)):
+        pass
+    attribute.done()
+
+
+def _check_optional_set(fields, tag, field_name, parse_member, *, nonempty=False):
+    if not fields.next_is(tag):
+        return
+    try:
+        content = fields.take(tag)
+        if nonempty and not content:
+            raise ValueError('empty DER SET OF')
+        for member in _set_members(content, 0x30):
+            parse_member(member)
+    except ValueError as error:
+        raise ValueError(f'invalid SignedData {field_name}: {error}') from error
+
+
 def _direct_signature(envelope, message, signer_identifier, signer_version):
     outer = _DER(envelope)
     content_info = _DER(outer.take(0x30))
@@ -108,11 +160,8 @@ def _direct_signature(envelope, message, signer_identifier, signer_version):
         attached.done()
     encapsulated.done()
 
-    # The caller pins the key and the identifier. Embedded certificates and
-    # revocation lists never determine the wallet's authorization key.
-    for tag in (0xa0, 0xa1):
-        if signed_data.next_is(tag):
-            signed_data.take(tag)
+    _check_optional_set(signed_data, 0xa0, 'certificates', load_der_x509_certificate)
+    _check_optional_set(signed_data, 0xa1, 'crls', load_der_x509_crl)
     signers = _DER(signed_data.take(0x31))
     signed_data.done()
     signer = _DER(signers.take(0x30))
@@ -131,8 +180,7 @@ def _direct_signature(envelope, message, signer_identifier, signer_version):
     else:
         _algorithm(signer, _SM2_SIGNATURE, _SM2_WITH_SM3)
     signature = _signature(signer.take(0x04))
-    if signer.next_is(0xa1):
-        signer.take(0xa1)
+    _check_optional_set(signer, 0xa1, 'unsignedAttrs', _check_attribute, nonempty=True)
     signer.done()
     return signature
 

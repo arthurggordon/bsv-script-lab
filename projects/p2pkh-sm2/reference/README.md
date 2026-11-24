@@ -62,9 +62,11 @@ algorithm identifier. The configured inner version must match on every response.
 
 Both modes verify one direct SM2 signature over the approved 32-byte payment
 message with the pinned public key and the template's fixed SM2 user ID. If the
-envelope includes content, its bytes must match the payment message. Embedded
-certificate and revocation fields are metadata. An application that uses PKI
-establishes certificate trust separately.
+envelope includes content, its bytes must match the payment message. The
+adapter checks the DER structure of embedded certificates, revocation lists
+and unsigned attributes. The configured public key determines payment
+authorization. An application that uses PKI establishes certificate trust
+separately.
 
 With `signedAttrs`, the signer signs the DER attributes. Such a signature
 requires a verifier for that signed payload. The payment adapter rejects it
@@ -82,7 +84,6 @@ digest of the DER `ContentInfo`. The payment adapter rejected it at the
 signature check because the template requires the SM2 user ID and the raw
 payment message as signature inputs.
 
-The [SignedData acceptance fixture](signed-data-acceptance.md) checks all 540
-combinations in its declared domain and traces additional cases to the
-standard's clauses. It records the optional metadata cases that distinguish
-payment acceptance from full envelope conformance.
+The [SignedData acceptance fixture](signed-data-acceptance.md) exhausts its
+540-row payment matrix and 256-row optional metadata matrix. It maps both to
+the standard's clauses and states the boundaries of the conformance evidence.

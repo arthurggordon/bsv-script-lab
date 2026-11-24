@@ -56,6 +56,28 @@ covering configured version, attached content, SM2 verification, the v2
 algorithm identifier, and minimal DER lengths. Removing one matrix row also
 failed the run with a count of 539.
 
+## Complete enumeration of optional metadata combinations
+
+The second matrix holds the payment signature valid and crosses both
+configured versions and both content modes with four states for each of
+`certificates`, `crls` and `unsignedAttrs`. The states are absent, empty set,
+one valid member and one member encoded as ASN.1 `NULL`. The same membership,
+uniqueness and cardinality checks establish coverage of all
+\(2 \times 2 \times 4^3 = 256\) tuples.
+
+The acceptance set follows from the field grammar. Certificates and CRLs
+permit absent, empty and valid, while the optional unsigned attribute set
+must have at least one attribute when present. Thus
+\(2 \times 2 \times 3 \times 3 \times 2 = 72\) tuples must yield the exact
+payment signature. The other 184 must report the first invalid field.
+OpenSSL independently generates and parses the test certificate and CRL.
+Separate mutations cover a CRL placed in the certificate field, a certificate
+placed in the CRL field, empty sequences presented as either type, and
+invalid OID, tag, length and order in unsigned attributes.
+Bypassing the validator for each optional field in turn made this matrix
+fail in all three runs. Each original wrong-type counterexample therefore
+checks the adapter's actual decision.
+
 ## Clause-to-test traceability
 
 | Rule | Executable evidence |
@@ -68,12 +90,11 @@ failed the run with a count of 539.
 | §8 table 2 `signerInfos` | One signer in the matrix. The two-signer fixture carries independently verified signatures and is rejected by the single-signer payment profile. |
 | §8 table 3 `signedAttrs` and signing rules after table 3 | OpenSSL verifies the signature over the attribute SET and rejects the same signature over the raw payment message. The adapter rejects the attribute form. |
 | §8 table 3 `signatureAlgorithm` and `signature` | Crossed algorithm and signature modes. Separate cases exercise missing, non-canonical and out-of-range signature integers in both scalar positions. |
-| §8 table 2 `certificates` and `crls`, table 3 `unsignedAttrs` | Valid member examples and a wrong-type ASN.1 `NULL` for each field. The adapter accepts both variants when the direct payment signature is valid. These are three reproducible gaps in envelope conformance validation. |
+| §8 table 2 `certificates` and `crls`, table 3 `unsignedAttrs` | Both versions and content modes cross all declared member states. Wrong-type values, including the three original ASN.1 `NULL` counterexamples, are rejected. Independent schema and order mutations exercise checks inside the wrappers. |
 
-The completeness claim is for the six-axis product and the explicit prefix
-and suffix families. Other raw DER encodings, message and key values, arbitrary
-content OIDs, nested optional fields and all signer sets remain outside that
-proof. The clause witnesses also leave external PKI, complete signed-attribute
-validation, and conformance of the full envelope outside the verified scope.
-A passing payment suite records those limits, including the three known
-false acceptances if payment acceptance were used as an envelope validator.
+The completeness claim covers the two declared products and the explicit
+prefix and suffix families. Full-envelope conformance would also need evidence
+for other DER encodings, content OIDs, message and key values, nested open
+attribute values, arbitrary signer sets, and signed attributes. Certificate
+and revocation-list checks here use X.509 DER parsing. Trust and revocation
+policy are established externally.

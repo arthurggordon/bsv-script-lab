@@ -196,7 +196,7 @@ class SignedDataAcceptance(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'trailing or unsupported'):
             self.apply_adapter(two_signers)
 
-    def test_optional_metadata_has_positive_witnesses_and_documented_conformance_gaps(self):
+    def test_optional_metadata_exhausts_the_declared_domain(self):
         self.openssl('req', '-new', '-x509', '-key', 'signer.pem', '-sm3', '-subj', '/CN=Test issuer',
                      '-set_serial', '1', '-days', '1', '-out', 'issuer.pem')
         cert = self.openssl('x509', '-in', 'issuer.pem', '-outform', 'DER')
@@ -213,19 +213,78 @@ class SignedDataAcceptance(unittest.TestCase):
         self.openssl('crl', '-inform', 'DER', '-noout', data=crl)
         unsigned_attribute = der(0x30, bytes.fromhex('06092a864886f70d010902')
                                  + der(0x31, der(0x16, b'Test metadata')))
-        cases = (
-            ('§8 table 2 certificates', 'metadata', 0xa0, cert),
-            ('§8 table 2 crls', 'metadata', 0xa1, crl),
-            ('§8 table 3 unsignedAttrs', 'unsigned_attrs', 0xa1, unsigned_attribute),
+        states = ('absent', 'empty', 'valid', 'wrong_type')
+        axes = (CONFIGURED_VERSIONS, (None, MESSAGE), states, states, states)
+        fields = (
+            ('certificates', 0xa0, cert),
+            ('crls', 0xa1, crl),
+            ('unsignedAttrs', 0xa1, unsigned_attribute),
         )
-        for rule, field, tag, valid_member in cases:
-            for conforms, member in ((True, valid_member), (False, NULL)):
-                # NULL violates the member type of all three SET OF fields.
-                # Both variants still contain the same valid payment signature.
-                with self.subTest(rule=rule, conforming_member_type=conforms):
-                    envelope = signed_data(self.signatures['direct'], attached=MESSAGE,
-                                           **{field: der(tag, member)})
-                    self.assertEqual(self.apply_adapter(envelope), self.raw_direct)
+        accepted = set()
+        visited = set()
+        self.assertTrue(all(len(set(axis)) == len(axis) for axis in axes))
+        self.assertEqual(prod(map(len, axes)), 256)
+        for case in product(*axes):
+            version, content, *field_states = case
+            with self.subTest(version=version, attached=content is not None, states=field_states):
+                self.assertTrue(all(value in axis for value, axis in zip(case, axes, strict=True)))
+                self.assertNotIn(case, visited)
+                visited.add(case)
+                metadata = []
+                invalid = []
+                for (name, tag, valid_member), state in zip(fields, field_states, strict=True):
+                    member = {'empty': b'', 'valid': valid_member, 'wrong_type': NULL}.get(state)
+                    metadata.append(b'' if member is None else der(tag, member))
+                    if state == 'wrong_type' or (name == 'unsignedAttrs' and state == 'empty'):
+                        invalid.append(name)
+                envelope = signed_data(self.signatures['direct'], attached=content, version=version,
+                                       metadata=metadata[0] + metadata[1], unsigned_attrs=metadata[2])
+                if invalid:
+                    with self.assertRaisesRegex(ValueError, 'invalid SignedData ' + invalid[0]):
+                        self.apply_adapter(envelope, version)
+                else:
+                    self.assertEqual(self.apply_adapter(envelope, version), self.raw_direct)
+                    accepted.add(case)
+
+        self.assertEqual(len(visited), 256)
+        allowed = ('absent', 'empty', 'valid')
+        self.assertEqual(accepted, set(product(*axes[:2], allowed, allowed, ('absent', 'valid'))))
+        self.assertEqual(len(accepted), 72)
+
+        for field, tag, member in (
+            ('certificates', 0xa0, der(0x30, b'')),
+            ('certificates', 0xa0, crl),
+            ('crls', 0xa1, der(0x30, b'')),
+            ('crls', 0xa1, cert),
+        ):
+            with self.subTest(wrong_schema=field), self.assertRaisesRegex(ValueError, 'invalid SignedData ' + field):
+                self.apply_adapter(signed_data(self.signatures['direct'], metadata=der(tag, member)))
+
+    def test_unsigned_attribute_der_structure_and_order(self):
+        oid = der(0x06, bytes.fromhex('2a0304'))
+        low, high = der(0x04, b'a'), bytes.fromhex('9f1f0162')
+        attribute = der(0x30, oid + der(0x31, low + high))
+        other_attribute = der(0x30, oid + der(0x31, der(0x04, b'z')))
+        valid = b''.join(sorted((attribute, other_attribute)))
+
+        def envelope(attributes):
+            return signed_data(self.signatures['direct'], unsigned_attrs=der(0xa1, attributes))
+
+        self.assertEqual(self.apply_adapter(envelope(valid)), self.raw_direct)
+        cases = (
+            ('attribute SET order', b''.join(sorted((attribute, other_attribute), reverse=True)),
+             'DER SET OF members out of order'),
+            ('attribute value SET order', der(0x30, oid + der(0x31, high + low)), 'DER SET OF members out of order'),
+            ('OID with redundant base-128 octet', der(0x30, der(0x06, b'\x2a\x80\x01') + der(0x31, low)),
+             'invalid DER attribute OID'),
+            ('wrong attrValues tag', der(0x30, oid + der(0x30, low)), 'unexpected or truncated'),
+            ('trailing attribute child', der(0x30, oid + der(0x31, low) + NULL), 'trailing or unsupported'),
+            ('non-minimal high tag', der(0x30, oid + der(0x31, bytes.fromhex('9f1e00'))), 'invalid DER tag'),
+            ('truncated value', der(0x30, oid + der(0x31, bytes.fromhex('0402ff'))), 'truncated DER content'),
+        )
+        for name, attributes, reason in cases:
+            with self.subTest(rule=name), self.assertRaisesRegex(ValueError, 'invalid SignedData unsignedAttrs: ' + reason):
+                self.apply_adapter(envelope(attributes))
 
 
 if __name__ == '__main__':
