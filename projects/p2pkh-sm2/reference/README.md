@@ -123,3 +123,16 @@ This entry point can parse a certificate-only envelope with an empty
 It returns normally when the format checks pass. Use `verify_signed_data`
 with authenticated signer keys and any detached content to verify a
 signature and obtain the signed bytes.
+
+Pass `extension_schemas` to the format validator as a mapping from dotted
+extension OIDs to `asn1crypto` ASN.1 classes. A supplied schema checks each
+value against its canonical DER encoding. In this mode, an otherwise
+unrecognized extension without a supplied schema raises
+`MissingExtensionSchema`. The check applies to certificates, CRLs and
+individual revoked-certificate entries.
+
+The general signature verifier takes `signed_attrs_encoding='cms-set'`
+for the CMS universal SET signing input. Select `'context-field'` to
+verify the original `[0]` field bytes. Each verification uses the selected
+encoding. The acceptance record documents the evidence for both encodings
+and the open normative question. [Encoding evidence](signed-data-acceptance.md#format-and-x509-profile-witnesses)

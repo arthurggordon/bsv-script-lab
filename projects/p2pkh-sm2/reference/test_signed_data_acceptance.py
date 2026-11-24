@@ -12,7 +12,8 @@ from asn1crypto.core import Integer, SetOf
 from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
 from ecdsa.der import read_length, remove_integer, remove_sequence
 from ecdsa.util import sigdecode_der
-from signed_data import MissingAttributeSchema, signed_data_signer, validate_signed_data_format, verify_signed_data
+from signed_data import MissingAttributeSchema, MissingExtensionSchema
+from signed_data import signed_data_signer, validate_signed_data_format, verify_signed_data
 from sm2 import N
 from test_signed_data import (
     DATA_OID, ISSUER_AND_SERIAL, OTHER_ISSUER_AND_SERIAL, SIGNED_DATA_OID,
@@ -44,8 +45,8 @@ TABLE_3 = ('version', 'issuerAndSerialNumber', 'digestAlgorithm', 'signedAttrs',
 CLAUSE_EVIDENCE = {
     '5.ContentInfo': ('single_field', 'framing'),
     '6.1.CertificateRevocationLists': ('metadata', 'crl_next_update', 'x509_algorithms'),
-    '6.3.DigestAlgorithmIdentifier': ('single_field', 'digest_set'),
-    '6.4.SignatureAlgorithmIdentifier': ('payment_matrix', 'digest_set'),
+    '6.3.DigestAlgorithmIdentifier': ('single_field', 'digest_set', 'envelope_parameters'),
+    '6.4.SignatureAlgorithmIdentifier': ('payment_matrix', 'digest_set', 'envelope_parameters'),
     '6.5.Certificates': ('metadata', 'certificate_fields', 'x509_algorithms'),
     '6.6.IssuerAndSerialNumber': ('issuer', 'single_field'),
     '6.8.Version': ('payment_matrix', 'version_octet'),
@@ -67,12 +68,12 @@ CLAUSE_EVIDENCE = {
     '8.table3.signature': ('external_signature', 'der_scalars'),
     '8.table3.unsignedAttrs': ('metadata', 'unsigned_attribute', 'open_value_der', 'open_value_forms'),
     '8.direct_signature': ('external_signature', 'payment_matrix'),
-    '8.signed_attrs_signature': ('signed_attrs_policy', 'verify_signed_attributes'),
+    '8.signed_attrs_signature': ('signed_attrs_policy', 'verify_signed_attributes', 'signed_attrs_encoding'),
     '8.messageDigest': ('verify_signed_attributes',),
     'A.1.example': ('appendix_a1',),
     'GB/T 20518-2018.5.2.2.SM2ParametersAndSignatureValue': ('x509_parameters', 'x509_signature'),
     'GB/T 20518-2018.5.2.2.VersionDependencies': ('x509_extensions',),
-    'GB/T 20518-2018.5.2.4.1.Extensions': ('x509_extensions',),
+    'GB/T 20518-2018.5.2.4.1.Extensions': ('x509_extensions', 'extension_schemas'),
     'GB/T 20518-2018.5.2.3.6.Subject': ('certificate_profile',),
     'GB/T 20518-2018.5.2.4.2.2.AuthorityKeyIdentifier': ('certificate_profile',),
     'GB/T 20518-2018.5.2.4.2.3.SubjectKeyIdentifier': ('certificate_profile',),
@@ -86,6 +87,7 @@ CLAUSE_EVIDENCE = {
     'GB/T 20518-2018.5.2.3.4.Issuer': ('certificate_fields',),
     'GB/T 20518-2018.5.3.3.2.Signature': ('x509_algorithms',),
     'GB/T 20518-2018.5.3.4.1-5.CRLExtensionProfile': ('crl_profile',),
+    'GB/T 20518-2018.5.3.4.6-7.CRLAndEntryExtensions': ('crl_entry_profile',),
     'GB/T 20518-2018.5.2.3.5.2.ValidityTime': ('x509_time',),
     'GB/T 20518-2018.5.3.2.SM2ParametersAndSignatureValue': ('x509_parameters', 'x509_signature'),
     'GB/T 20518-2018.5.3.3.4.thisUpdate': ('x509_time',),
@@ -1155,6 +1157,153 @@ class SignedDataReview(SignedDataFixtures):
                     with self.assertRaisesRegex(ValueError, error):
                         validate_signed_data_format(envelope)
         COMPLETED_WITNESSES.add('crl_profile')
+
+    def test_chapter_8_freshest_crl_and_revoked_entry_constraints(self):
+        _, crl = self.issue_certificate_and_crl(version_2_crl=True)
+        body, algorithm = x509_signed_parts(crl)
+        prefix = b''.join(tuple(encoded_fields(body))[:5])
+
+        def extension(number, value, *, critical=False):
+            critical_field = der(0x01, b'\xff') if critical else b''
+            return der(0x30, der(0x06, bytes((0x55, 0x1d, number))) + critical_field + der(0x04, value))
+
+        def freshest(point_fields, *, critical=False):
+            return extension(46, der(0x30, der(0x30, point_fields)), critical=critical)
+
+        def reason(number, *, critical=False):
+            return extension(21, der(0x0a, bytes((number,))), critical=critical)
+
+        distribution_point = der(0xa0, der(0xa0, der(0x86, b'https://example.org/delta.crl')))
+        freshest_crl = freshest(distribution_point)
+        number = extension(20, der(0x02, b'\x09'))
+        delta = extension(27, der(0x02, b'\x08'), critical=True)
+        invalidity_date = der(0x18, b'20251230235959Z')
+        cases = (
+            ('complete CRL points to delta', freshest_crl, reason(1) + extension(24, invalidity_date), b'\x02', None),
+            ('removeFromCRL on delta', delta, reason(8), b'\x02', None),
+            ('critical freshestCRL', freshest(distribution_point, critical=True), b'', b'\x02',
+             'freshestCRL must be noncritical'),
+            ('freshestCRL on delta', freshest_crl + delta, b'', b'\x02', 'freshestCRL must not appear on a delta CRL'),
+            ('empty freshestCRL', extension(46, der(0x30, b'')), b'', b'\x02',
+             'freshestCRL must contain at least one distribution point'),
+            ('freshestCRL reasons', freshest(distribution_point + der(0x81, b'\x06\x40')), b'', b'\x02',
+             'must omit reasons and cRLIssuer'),
+            ('freshestCRL issuer', freshest(distribution_point + der(0xa2, der(0x82, b'issuer.example'))), b'', b'\x02',
+             'must omit reasons and cRLIssuer'),
+            ('removeFromCRL on complete', b'', reason(8), b'\x02', 'removeFromCRL requires a delta CRL'),
+            ('critical reasonCode', b'', reason(1, critical=True), b'\x02', 'reasonCode must be noncritical'),
+            ('critical invalidityDate', b'', extension(24, invalidity_date, critical=True), b'\x02',
+             'invalidityDate must be noncritical'),
+            ('empty certificateIssuer', b'', extension(29, der(0x30, b'')), b'\x02', 'certificateIssuer must contain'),
+            ('zero revoked serial', b'', b'', b'\x00', 'revoked certificate serial number must be positive'),
+            ('oversized revoked serial', b'', b'', b'\x00\x80' + bytes(19), 'at most 20 DER octets'),
+        )
+        for label, crl_extensions, entry_extensions, serial, error in cases:
+            entry = der(0x02, serial) + der(0x17, b'251231000000Z')
+            if entry_extensions:
+                entry += der(0x30, entry_extensions)
+            encoded = prefix + der(0x30, der(0x30, entry)) + der(0xa0, der(0x30, number + crl_extensions))
+            member = self.sign_review_metadata(encoded, algorithm)
+            envelope = signed_data(self.signatures['direct'], attached=MESSAGE, include_signer=False,
+                                   digest_algorithms=b'', metadata=der(0xa1, member))
+            with self.subTest(case=label):
+                if error is None:
+                    validate_signed_data_format(envelope)
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        validate_signed_data_format(envelope)
+        COMPLETED_WITNESSES.add('crl_entry_profile')
+
+    def test_typed_der_for_private_certificate_crl_and_revoked_entry_extensions(self):
+        class IntegerSet(SetOf):
+            _child_spec = Integer
+
+        certificate, crl = self.issue_certificate_and_crl(version_2_crl=True)
+        cert_body, cert_algorithm = x509_signed_parts(certificate)
+        crl_body, crl_algorithm = x509_signed_parts(crl)
+        cert_prefix = b''.join(tuple(encoded_fields(cert_body))[:7])
+        crl_prefix = b''.join(tuple(encoded_fields(crl_body))[:5])
+        revoked_entry = der(0x02, b'\x02') + der(0x17, b'251231000000Z')
+        contexts = (
+            ('certificate', 0xa0, cert_algorithm, lambda field: cert_prefix + der(0xa3, field)),
+            ('CRL', 0xa1, crl_algorithm, lambda field: crl_prefix + der(0xa0, field)),
+            ('CRL entry', 0xa1, crl_algorithm,
+             lambda field: crl_prefix + der(0x30, der(0x30, revoked_entry + field))),
+        )
+        first, second = der(0x02, b'\x01'), der(0x02, b'\x02')
+        cases = (
+            ('canonical SET OF', der(0x31, first + second), True),
+            ('wrong SET OF order', der(0x31, second + first), False),
+            ('wrong ASN.1 value type', der(0x04, b'test-only'), False),
+        )
+        oid = der(0x06, bytes.fromhex('2a0307'))
+        schemas = {'1.2.3.7': IntegerSet}
+        for kind, tag, algorithm, build in contexts:
+            for case, value, conforming in cases:
+                extension = der(0x30, oid + der(0x04, value))
+                encoded = self.sign_review_metadata(build(der(0x30, extension)), algorithm)
+                envelope = signed_data(self.signatures['direct'], attached=MESSAGE, include_signer=False,
+                                       digest_algorithms=b'', metadata=der(tag, encoded))
+                with self.subTest(kind=kind, case=case):
+                    validate_signed_data_format(envelope)
+                    with self.assertRaisesRegex(MissingExtensionSchema, r'1\.2\.3\.7'):
+                        validate_signed_data_format(envelope, extension_schemas={})
+                    if conforming:
+                        validate_signed_data_format(envelope, extension_schemas=schemas)
+                    else:
+                        with self.assertRaisesRegex(ValueError, r'invalid DER value for X.509 extension 1\.2\.3\.7'):
+                            validate_signed_data_format(envelope, extension_schemas=schemas)
+        COMPLETED_WITNESSES.add('extension_schemas')
+
+    def test_explicit_signed_attrs_encodings_have_separate_signature_inputs(self):
+        for tag, other_tag, encoding, other_encoding in (
+            (0x31, 0xa0, 'cms-set', 'context-field'),
+            (0xa0, 0x31, 'context-field', 'cms-set'),
+        ):
+            payload = der(tag, self.attribute)
+            signature = self.external_signature(payload)
+            self.assertTrue(self.external_verify(signature, payload))
+            self.assertFalse(self.external_verify(signature, der(other_tag, self.attribute)))
+            for attached in (None, MESSAGE):
+                with self.subTest(encoding=encoding, attached=attached is not None):
+                    detached = MESSAGE if attached is None else None
+                    envelope = signed_data(signature, attached=attached, signed_attrs=self.attributes)
+                    validate_signed_data_format(envelope)
+                    self.assertEqual(verify_signed_data(envelope, self.trusted_signers,
+                                                        detached_content=detached, signed_attrs_encoding=encoding),
+                                     MESSAGE)
+                    with self.assertRaisesRegex(ValueError, 'invalid SignedData signature'):
+                        verify_signed_data(envelope, self.trusted_signers,
+                                           detached_content=detached, signed_attrs_encoding=other_encoding)
+                    with self.assertRaisesRegex(ValueError, 'expected cms-set or context-field'):
+                        verify_signed_data(envelope, self.trusted_signers,
+                                           detached_content=detached, signed_attrs_encoding='auto')
+        COMPLETED_WITNESSES.add('signed_attrs_encoding')
+
+    def test_envelope_algorithm_parameter_interoperability_domain(self):
+        digest_oids = (bytes.fromhex('06082a811ccf55018311'), bytes.fromhex('06092a811ccf5501831101'))
+        signature_oid = bytes.fromhex('06092a811ccf5501822d01')
+        digest_identifiers = tuple(der(0x30, oid + params) for oid, params in product(digest_oids, (b'', NULL)))
+        signature_identifiers = tuple(der(0x30, signature_oid + params) for params in (b'', NULL))
+        cases = tuple(product(digest_identifiers, digest_identifiers, signature_identifiers))
+        self.assertEqual(len(set(cases)), 32)
+        for outer, inner, signer_algorithm in cases:
+            with self.subTest(outer=outer.hex(), inner=inner.hex(), signature=signer_algorithm.hex()):
+                envelope = signed_data(self.signatures['direct'], attached=MESSAGE, digest_algorithms=outer,
+                                       signer_digest=inner, algorithm=signer_algorithm)
+                validate_signed_data_format(envelope)
+                self.assertEqual(self.verify_attached(envelope), MESSAGE)
+                self.assertEqual(self.apply_adapter(envelope), self.raw_direct)
+        for field, oid in (('digest_algorithms', digest_oids[0]), ('signer_digest', digest_oids[1]),
+                           ('algorithm', signature_oid)):
+            for parameters in (der(0x05, b'\x01'), der(0x04, b'')):
+                envelope = signed_data(self.signatures['direct'], attached=MESSAGE,
+                                       **{field: der(0x30, oid + parameters)})
+                for check in (validate_signed_data_format, self.verify_attached, self.apply_adapter):
+                    with self.subTest(field=field, params=parameters.hex(), entry_point=check.__name__):
+                        with self.assertRaises(ValueError):
+                            check(envelope)
+        COMPLETED_WITNESSES.add('envelope_parameters')
 
     def check_extension_envelope(self, tag, body, algorithm, error=None):
         encoded = self.sign_review_metadata(body, algorithm)

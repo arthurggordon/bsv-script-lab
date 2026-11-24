@@ -162,9 +162,9 @@ implementation matched every expected outcome.
 | Normative area | Evidence | Remaining scope |
 | --- | --- | --- |
 | GB/T 20518-2018 §§5.2.2, 5.2.4.1 and 5.3.2 | Both verification entry points exercise certificate v1, v2 and v3, CRL v1 and v2, and version restrictions for unique identifiers and extensions. Certificate, CRL and revoked-entry extensions are checked for unique OIDs, DER DEFAULT omission, exactly one wrapped DER value and the supported extension payload type. | Extension-specific rules are tracked below. |
-| GB/T 35275-2026 §6.9 and §8 | Schema-aware verification checks a declared open type in both attribute fields. An independent signature remains valid when an inner SET OF is unsorted or the value has the wrong type. The ASN.1 schema check rejects both cases and identifies missing schemas explicitly. | Private attribute OIDs require their declaring ASN.1 schemas. The generic verifier alone leaves implicit tags and other schema-dependent constraints unresolved. |
+| GB/T 35275-2026 §6.9 and §8 | Schema-aware verification checks a declared open type in both attribute fields. An independent signature remains valid when an inner SET OF is unsorted or the value has the wrong type. The ASN.1 schema check rejects both cases and identifies missing schemas explicitly. The format verifier applies the same declared DER type check to extension values. | Private attribute and extension OIDs require their declaring ASN.1 schemas and profile constraints. |
 | GB/T 35275-2026 §8 signer-set grammar | Format validation accepts empty `SignerInfos` with attached, empty-attached and detached content and an empty or populated digest set. A wrong tag fails the format check. Signer verification covers one and multiple signers with mixed direct and attribute signing and requires at least one authenticated signature. | Covered for the declared framing and cardinality cases. |
-| GB/T 35275-2026 §§6.3–6.4 and §8 signed input | SM3 and SM2-1 interoperability is exercised with OpenSSL and the independent Go signer. CMS-style DER SET signing is covered for signed attributes. | The cited algorithm identifiers and Appendix A.1 give interoperability evidence. Envelope parameter syntax and the signed-attribute tagging convention still need a normative disposition for full conformance. |
+| GB/T 35275-2026 §§6.3–6.4 and §8 signed input | The envelope fixture enumerates 32 combinations of the two digest OIDs and absent or NULL parameters at all three algorithm fields. Format validation and both signature entry points execute every row. Independent OpenSSL signatures exercise universal SET and context-specific signedAttrs preimages in both content modes. Matching settings accept each signature, and cross-verification rejects it. | The cited algorithm identifiers and Appendix A.1 give interoperability evidence. Envelope parameter syntax and the signed-attribute tagging convention still need a normative disposition for full conformance. |
 
 The v2 certificate structural test uses `asn1crypto` because
 `cryptography` rejects certificate version v2 at load time. The
@@ -188,14 +188,16 @@ decisions require trusted inputs at the application layer.
 | GB/T 20518-2018 §§5.2.4.2.2–5.2.4.2.4 and 5.2.4.2.13 | AKI and SKI are noncritical when present. A CA requires SKI and keyCertSign. keyCertSign and nameConstraints require a CA certificate. |
 | GB/T 20518-2018 §5.2.4.2.8 | A policy mapping can map two ordinary OIDs. Both positions reject anyPolicy. |
 | GB/T 20518-2018 §§5.3.4.1–5.3.4.5 | CRL AKI and cRLNumber are noncritical, issuerAltName is nonempty, and deltaCRLIndicator and issuingDistributionPoint are critical. Both number fields accept nonnegative DER integers of at most 20 content octets. |
+| GB/T 20518-2018 §§5.3.4.6–5.3.4.7 | freshestCRL belongs on complete CRLs, is noncritical, contains at least one distribution point and omits reasons and cRLIssuer. Reason and invalidity date are noncritical, removeFromCRL requires a delta CRL, and certificateIssuer has at least one name. Revoked-entry serial numbers must be positive and fit within 20 DER content octets. |
+| GB/T 20518-2018 §5.2.4.1 | A declared private ASN.1 type is checked for certificates, CRLs and revoked entries. Tests exercise valid types, invalid type and SET OF order, and a distinct missing-schema error. |
 
 Remaining X.509 scope includes the other extension-specific rules, issuer
 and subject relationships, and the ordering and scope of delta and complete
 CRLs across objects. The certificate fixture uses independently signed
 metadata to isolate each rejection from the signature bytes.
-The independent OpenSSL replay now runs 92 checks using a separate DER
-constructor, including empty signer sets, an empty subject with SAN, CA
-key usage, and criticality of the delta CRL indicator.
+The independent OpenSSL replay now runs 103 checks using a separate DER
+constructor. Added cases include a private extension schema, removeFromCRL,
+and crossed `signedAttrs` preimages.
 
 The national standard catalog and the published texts were rechecked for
 the two signature-encoding questions. The GB/T 33560 identifier assignments
@@ -206,7 +208,13 @@ SET tag when producing the CMS signing input. GB/T 35275-2026 §8 names
 the DER encoding of `signedAttrs`, and Appendix A.1 supplies a direct
 signature. The acceptance record keeps the parameter and signing-tag
 questions open pending an authoritative disposition for this standard.
+The published drafting explanation also leaves these choices open. The
+two questions are which parameter encodings each SignedData algorithm OID
+permits, and whether §8 signs the DER field tagged `[0]` or its universal
+SET encoding. The verifier has separate settings for the two preimages,
+and the payment adapter continues to verify direct signatures over content.
 [GB/T 35275-2026](https://std.samr.gov.cn/gb/search/gbDetailedCNF?id=511EBC5968889318E06397BE0A0AFBD5) ·
+[GB/T 35275 drafting explanation](https://std.samr.gov.cn/dcpspTools/gbPlan/download?path=%2Fzxd%2F2024005089%2F20_%E6%A0%87%E5%87%86%E8%B5%B7%E8%8D%89%2F20_DI_2024005089_%E7%BD%91%E7%BB%9C%E5%AE%89%E5%85%A8%E6%8A%80%E6%9C%AF+SM2%E5%AF%86%E7%A0%81%E7%AE%97%E6%B3%95%E5%8A%A0%E5%AF%86%E7%AD%BE%E5%90%8D%E6%B6%88%E6%81%AF.pdf) ·
 [GB/T 33560-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=9BF813CEEAFB58A19534FF861465D8FD) ·
 [ITU-T X.690 §8.14](https://www.itu.int/rec/T-REC-X.690/en) ·
 [RFC 5652 §5.4](https://www.rfc-editor.org/rfc/rfc5652#section-5.4)

@@ -2,8 +2,9 @@
 
 from asn1crypto.core import ObjectIdentifier
 from asn1crypto.x509 import Certificate as ASN1Certificate
-from cryptography.x509 import UnsupportedGeneralNameType, load_der_x509_certificate, load_der_x509_crl
-from cryptography.x509.oid import ExtensionOID
+from cryptography.x509 import ReasonFlags, UnrecognizedExtension, UnsupportedGeneralNameType
+from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
+from cryptography.x509.oid import CRLEntryExtensionOID, ExtensionOID
 
 from sm2 import N, USER_ID, be32, parse_public, sm3, verify
 
@@ -82,6 +83,10 @@ class _DER:
 
 class MissingAttributeSchema(ValueError):
     """An AttributeValue's declared ASN.1 type is unavailable."""
+
+
+class MissingExtensionSchema(ValueError):
+    """An X.509 extension's declared ASN.1 type is unavailable."""
 
 
 def _algorithm(fields, *allowed):
@@ -234,6 +239,15 @@ def _check_open_value(encoded):
                 pending.append(_DER(value))
 
 
+def _check_schema_der(schema, encoded, label):
+    try:
+        value = schema.load(encoded, strict=True)
+        if value.dump(force=True) != encoded:
+            raise ValueError('value is not the canonical encoding of its ASN.1 type')
+    except ValueError as error:
+        raise ValueError(f'invalid DER value for {label}: {error}') from error
+
+
 def _check_attribute_schema(oid, values, schemas):
     if oid == _MESSAGE_DIGEST:
         if len(values) != 1:
@@ -249,12 +263,7 @@ def _check_attribute_schema(oid, values, schemas):
     if schema is None:
         raise MissingAttributeSchema(f'missing ASN.1 schema for SignedData attribute {identifier}')
     for encoded in values:
-        try:
-            value = schema.load(encoded, strict=True)
-            if value.dump(force=True) != encoded:
-                raise ValueError('value is not the canonical encoding of its ASN.1 type')
-        except ValueError as error:
-            raise ValueError(f'invalid DER value for SignedData attribute {identifier}: {error}') from error
+        _check_schema_der(schema, encoded, f'SignedData attribute {identifier}')
 
 
 def _attribute(encoded, schemas=None):
@@ -327,7 +336,7 @@ def _check_certificate_extension_value(oid, encoded):
             mapping.done()
 
 
-def _check_extensions(encoded, *, certificate_profile=False):
+def _check_extensions(encoded, *, certificate_profile=False, schemas=None):
     outer = _DER(encoded)
     extensions = _DER(outer.take(0x30))
     outer.done()
@@ -348,8 +357,22 @@ def _check_extensions(encoded, *, certificate_profile=False):
         entry.done()
         if certificate_profile:
             _check_certificate_extension_value(oid, encoded_value)
+        if schemas is not None:
+            identifier = ObjectIdentifier(contents=oid).dotted
+            if identifier in schemas:
+                _check_schema_der(schemas[identifier], encoded_value, f'X.509 extension {identifier}')
     if not seen:
         raise ValueError('empty X.509 Extensions')
+
+
+def _require_extension_schemas(extensions, schemas, *, locally_decoded=()):
+    if schemas is None:
+        return
+    for extension in extensions:
+        if isinstance(extension.value, UnrecognizedExtension) and extension.oid not in locally_decoded:
+            identifier = extension.oid.dotted_string
+            if identifier not in schemas:
+                raise MissingExtensionSchema(f'missing ASN.1 schema for X.509 extension {identifier}')
 
 
 def _check_certificate_profile(extensions, *, subject_present):
@@ -385,7 +408,7 @@ def _check_certificate_profile(extensions, *, subject_present):
         raise ValueError('nameConstraints requires a CA certificate')
 
 
-def _check_certificate(encoded, *, profile=False):
+def _check_certificate(encoded, *, profile=False, schemas=None):
     fields = _DER(_DER(encoded).take(0x30))
     tbs = _DER(fields.take(0x30))
     version = b'\x00'
@@ -417,7 +440,7 @@ def _check_certificate(encoded, *, profile=False):
     if tbs.next_is(0xa3):
         if version != b'\x02':
             raise ValueError('certificate extensions require v3')
-        _check_extensions(tbs.take(0xa3), certificate_profile=profile)
+        _check_extensions(tbs.take(0xa3), certificate_profile=profile, schemas=schemas)
     tbs.done()
     if version == b'\x01':
         # GB/T 20518 permits v2, which cryptography's certificate loader rejects.
@@ -436,6 +459,7 @@ def _check_certificate(encoded, *, profile=False):
         raise ValueError(f'invalid X.509 certificate extension: {error}') from error
     if profile:
         _check_certificate_profile(extensions, subject_present=bool(subject))
+    _require_extension_schemas(extensions, schemas, locally_decoded=(ExtensionOID.POLICY_MAPPINGS,))
 
 
 def _check_crl_profile(extensions):
@@ -461,9 +485,39 @@ def _check_crl_profile(extensions):
     distribution = fields.get(ExtensionOID.ISSUING_DISTRIBUTION_POINT)
     if distribution is not None and not distribution.critical:
         raise ValueError('issuingDistributionPoint must be critical')
+    is_delta = ExtensionOID.DELTA_CRL_INDICATOR in fields
+    freshest = fields.get(ExtensionOID.FRESHEST_CRL)
+    if freshest is not None:
+        if is_delta:
+            raise ValueError('freshestCRL must not appear on a delta CRL')
+        if freshest.critical:
+            raise ValueError('freshestCRL must be noncritical')
+        if not len(freshest.value):
+            raise ValueError('freshestCRL must contain at least one distribution point')
+        if any(point.reasons is not None or point.crl_issuer is not None for point in freshest.value):
+            raise ValueError('freshestCRL distribution points must omit reasons and cRLIssuer')
+    return is_delta
 
 
-def _check_crl(encoded, *, profile=False):
+def _check_crl_entry_profile(serial, extensions, *, is_delta):
+    if serial <= 0 or serial.bit_length() > 159:
+        raise ValueError('revoked certificate serial number must be positive and at most 20 DER octets')
+    fields = {extension.oid: extension for extension in extensions}
+    reason = fields.get(CRLEntryExtensionOID.CRL_REASON)
+    if reason is not None:
+        if reason.critical:
+            raise ValueError('reasonCode must be noncritical')
+        if reason.value.reason == ReasonFlags.remove_from_crl and not is_delta:
+            raise ValueError('removeFromCRL requires a delta CRL')
+    invalidity = fields.get(CRLEntryExtensionOID.INVALIDITY_DATE)
+    if invalidity is not None and invalidity.critical:
+        raise ValueError('invalidityDate must be noncritical')
+    issuer = fields.get(CRLEntryExtensionOID.CERTIFICATE_ISSUER)
+    if issuer is not None and not len(issuer.value):
+        raise ValueError('certificateIssuer must contain at least one name')
+
+
+def _check_crl(encoded, *, profile=False, schemas=None):
     fields = _DER(_DER(encoded).take(0x30))
     tbs = _DER(fields.take(0x30))
     version_2 = tbs.next_is(0x02)
@@ -484,24 +538,27 @@ def _check_crl(encoded, *, profile=False):
             if entry.next_is(0x30):
                 if not version_2:
                     raise ValueError('revoked certificate extensions require CRL v2')
-                _check_extensions(entry.take_encoded(0x30))
+                _check_extensions(entry.take_encoded(0x30), schemas=schemas)
             entry.done()
     if tbs.next_is(0xa0):
         if not version_2:
             raise ValueError('CRL extensions require v2')
-        _check_extensions(tbs.take(0xa0))
+        _check_extensions(tbs.take(0xa0), schemas=schemas)
     tbs.done()
     crl = load_der_x509_crl(encoded)
     if not crl.issuer.rdns:
         raise ValueError('empty CRL issuer Name')
     try:
         extensions = crl.extensions
+        is_delta = _check_crl_profile(extensions) if profile else False
         for entry in crl:
-            entry.extensions
+            entry_extensions = entry.extensions
+            if profile:
+                _check_crl_entry_profile(entry.serial_number, entry_extensions, is_delta=is_delta)
+            _require_extension_schemas(entry_extensions, schemas)
     except UnsupportedGeneralNameType as error:
         raise ValueError(f'invalid X.509 revocation extension: {error}') from error
-    if profile:
-        _check_crl_profile(extensions)
+    _require_extension_schemas(extensions, schemas)
 
 
 def _check_optional_set(fields, tag, field_name, parse_member, *, nonempty=False):
@@ -513,7 +570,7 @@ def _check_optional_set(fields, tag, field_name, parse_member, *, nonempty=False
             raise ValueError('empty DER SET OF')
         for member in _set_members(content, 0x30):
             parse_member(member)
-    except MissingAttributeSchema:
+    except (MissingAttributeSchema, MissingExtensionSchema):
         raise
     except ValueError as error:
         raise ValueError(f'invalid SignedData {field_name}: {error}') from error
@@ -547,10 +604,11 @@ def _content(fields):
     return oid, content
 
 
-def _signer_infos(fields, *, x509_profile=False):
+def _signer_infos(fields, *, x509_profile=False, extension_schemas=None):
     _check_optional_set(fields, 0xa0, 'certificates',
-                        lambda member: _check_certificate(member, profile=x509_profile))
-    _check_optional_set(fields, 0xa1, 'crls', lambda member: _check_crl(member, profile=x509_profile))
+                        lambda member: _check_certificate(member, profile=x509_profile, schemas=extension_schemas))
+    _check_optional_set(fields, 0xa1, 'crls',
+                        lambda member: _check_crl(member, profile=x509_profile, schemas=extension_schemas))
     signers = fields.take(0x31)
     fields.done()
     return signers
@@ -593,7 +651,7 @@ def _direct_signature(envelope, message, signer_identifier):
     return _signer_signature(signer)
 
 
-def _signed_attribute_payload(encoded, content_digest, attribute_schemas=None):
+def _check_signed_attributes(encoded, content_digest, attribute_schemas):
     members = _DER(encoded).take(0xa0)
     digests = []
     for member in _set_members(members, 0x30):
@@ -609,11 +667,9 @@ def _signed_attribute_payload(encoded, content_digest, attribute_schemas=None):
     if content_digest is None and len(digest) != 32:
         raise ValueError('signedAttrs messageDigest must contain 32 SM3 octets')
     value.done()
-    # The signing input is the DER encoding of the SignedAttributes SET OF.
-    return b'\x31' + encoded[1:]
 
 
-def _general_fields(envelope, *, x509_profile=False):
+def _general_fields(envelope, *, x509_profile=False, extension_schemas=None):
     if not isinstance(envelope, bytes):
         raise ValueError('expected a DER SignedData envelope')
     fields = _signed_data(envelope)
@@ -621,7 +677,7 @@ def _general_fields(envelope, *, x509_profile=False):
     for algorithm in _set_members(algorithms, 0x30):
         _digest_algorithm(_DER(algorithm))
     _, content = _content(fields)
-    signers = _signer_infos(fields, x509_profile=x509_profile)
+    signers = _signer_infos(fields, x509_profile=x509_profile, extension_schemas=extension_schemas)
     if signers and not algorithms:
         raise ValueError('expected SM3 in digestAlgorithms')
     return content, signers
@@ -635,22 +691,26 @@ def _decode_signers(signers, attribute_schemas, *, content_digest=None):
         _digest_algorithm(signer)
         attributes = None
         if signer.next_is(0xa0):
-            attributes = _signed_attribute_payload(signer.take_encoded(0xa0), content_digest, attribute_schemas)
+            attributes = signer.take_encoded(0xa0)
+            _check_signed_attributes(attributes, content_digest, attribute_schemas)
         yield identifier, attributes, _signer_signature(signer, attribute_schemas)
 
 
-def validate_signed_data_format(envelope, *, attribute_schemas=None):
+def validate_signed_data_format(envelope, *, attribute_schemas=None, extension_schemas=None):
     """Check Chapter 8 framing and the implemented X.509 profile rules.
 
     A zero-signer envelope can be structurally valid. Signature verification
     and PKI trust decisions are separate from this format check.
+    Pass extension_schemas to check declared extension types by dotted OID
+    and to report a missing schema for any unrecognized extension value.
     """
-    _, signers = _general_fields(envelope, x509_profile=True)
+    _, signers = _general_fields(envelope, x509_profile=True, extension_schemas=extension_schemas)
     for _ in _decode_signers(signers, attribute_schemas):
         pass
 
 
-def verify_signed_data(envelope, trusted_signers, *, detached_content=None, attribute_schemas=None):
+def verify_signed_data(envelope, trusted_signers, *, detached_content=None, attribute_schemas=None,
+                       signed_attrs_encoding='cms-set'):
     """Verify one or more v2 signers and return the signed content octets.
 
     trusted_signers maps DER IssuerAndSerialNumber to (SM2 public key, user ID).
@@ -659,9 +719,13 @@ def verify_signed_data(envelope, trusted_signers, *, detached_content=None, attr
     Supply attribute_schemas as a mapping from dotted attribute OIDs to
     asn1crypto ASN.1 classes for schema-aware DER checks. Missing types in
     this mode raise MissingAttributeSchema. messageDigest has a built-in type.
+    Select cms-set for the existing CMS signing input or context-field for the
+    original [0] field encoding. A verification call uses a single encoding.
     """
     if detached_content is not None and not isinstance(detached_content, bytes):
         raise ValueError('expected detached content octets')
+    if signed_attrs_encoding not in ('cms-set', 'context-field'):
+        raise ValueError('expected cms-set or context-field for signedAttrs encoding')
 
     content, signers = _general_fields(envelope)
     if content is None:
@@ -679,7 +743,9 @@ def verify_signed_data(envelope, trusted_signers, *, detached_content=None, attr
         if identifier not in trusted_signers:
             raise ValueError('untrusted SignedData signer identifier')
         key, user_id = trusted_signers[identifier]
-        payload = content if attributes is None else attributes
+        payload = content
+        if attributes is not None:
+            payload = b'\x31' + attributes[1:] if signed_attrs_encoding == 'cms-set' else attributes
         if not verify(key, payload, signature, user_id):
             raise ValueError('invalid SignedData signature')
     return content
