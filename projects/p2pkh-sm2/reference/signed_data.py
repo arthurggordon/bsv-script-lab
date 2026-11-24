@@ -39,8 +39,27 @@ _CURVE_SM2 = bytes.fromhex('2a811ccf5501822d')
 _SM2_X509_SIGNATURE_OIDS = frozenset(ObjectIdentifier(contents=oid).dotted
                                       for oid in (_SM2_SIGNATURE, _SM2_WITH_SM3))
 _MESSAGE_DIGEST = ObjectIdentifier('1.2.840.113549.1.9.4').contents  # PKCS #9 messageDigest
-_COMMON_NAME = ObjectIdentifier('2.5.4.3').contents
 _DIRECTORY_STRING_TAGS = frozenset((0x0c, 0x13, 0x14, 0x1c, 0x1e))
+# Naming attribute types and character bounds from RFC 5280 Appendix A.1.
+_DIRECTORY_NAME_TYPES = {
+    bytes((0x55, 0x04, number)): (name, upper)
+    for number, name, upper in (
+        (3, 'commonName', 64), (4, 'surname', 32768), (7, 'localityName', 128),
+        (8, 'stateOrProvinceName', 128), (10, 'organizationName', 64),
+        (11, 'organizationalUnitName', 64), (12, 'title', 64), (41, 'name', 32768),
+        (42, 'givenName', 32768), (43, 'initials', 32768), (44, 'generationQualifier', 32768),
+        (65, 'pseudonym', 128),
+    )
+}
+_ASCII_NAME_TYPES = {
+    b'\x55\x04\x05': ('serialNumber', 0x13, 1, 64),
+    b'\x55\x04\x06': ('countryName', 0x13, 2, 2),
+    b'\x55\x04\x2e': ('dnQualifier', 0x13, 0, None),
+    ObjectIdentifier('0.9.2342.19200300.100.1.25').contents: ('domainComponent', 0x16, 0, None),
+    ObjectIdentifier('1.2.840.113549.1.9.1').contents: ('emailAddress', 0x16, 1, 255),
+}
+_UNICODE_STRINGS = {0x0c: ('UTF8String', 'utf-8'), 0x1c: ('UniversalString', 'utf-32-be'),
+                    0x1e: ('BMPString', 'utf-16-be')}
 _BASIC_CONSTRAINTS = bytes.fromhex('551d13')
 _NAME_CONSTRAINTS = bytes.fromhex('551d1e')
 _POLICY_MAPPINGS = bytes.fromhex('551d21')
@@ -172,32 +191,41 @@ def _check_issuer_and_serial_number(identifier):
     fields = _DER(outer.take(0x30))
     outer.done()
     try:
-        _check_issuer_name(fields.take(0x30))
+        _check_name(fields.take(0x30))
     except ValueError as error:
         raise ValueError(f'invalid DER issuer Name: {error}') from error
     _check_certificate_serial(fields.take(0x02))
     fields.done()
 
 
-def _check_issuer_name(encoded):
+def _check_name(encoded, *, field='issuer'):
     if not encoded:
-        raise ValueError('empty DER issuer Name')
+        raise ValueError(f'empty DER {field} Name')
     name = _DER(encoded)
     while name.position < len(name.data):
         rdn = name.take(0x31)
         if not rdn:
-            raise ValueError('empty DER issuer RDN')
+            raise ValueError(f'empty DER {field} RDN')
         for member in _set_members(rdn, 0x30):
             attribute = _DER(_DER(member).take(0x30))
             oid = attribute.take(0x06)
             _check_oid(oid)
             value = attribute.take_encoded()
             _check_open_value(value)
-            if oid == _COMMON_NAME:
+            if oid in _DIRECTORY_NAME_TYPES:
+                label, upper = _DIRECTORY_NAME_TYPES[oid]
                 if value[0] not in _DIRECTORY_STRING_TAGS:
-                    raise ValueError('commonName must be a DirectoryString')
-                if not 1 <= len(DirectoryString.load(value, strict=True).native) <= 64:
-                    raise ValueError('commonName must contain 1 to 64 characters')
+                    raise ValueError(f'{label} must be a DirectoryString')
+                if not 1 <= len(DirectoryString.load(value, strict=True).native) <= upper:
+                    raise ValueError(f'{label} must contain 1 to {upper} characters')
+            if oid in _ASCII_NAME_TYPES:
+                label, tag, minimum, maximum = _ASCII_NAME_TYPES[oid]
+                if value[0] != tag:
+                    string_type = 'PrintableString' if tag == 0x13 else 'IA5String'
+                    raise ValueError(f'{label} must use {string_type}')
+                size = len(_DER(value).take(tag))
+                if size < minimum or (maximum is not None and size > maximum):
+                    raise ValueError(f'{label} has an invalid character count')
             attribute.done()
 
 
@@ -262,11 +290,14 @@ def _check_open_value(encoded):
                 raise ValueError('DER SEQUENCE and SET must be constructed')
             if tag in _CONSTRUCTED_CHARACTER_STRINGS:
                 raise ValueError('DER character strings must be primitive')
-            if tag == 0x0c:
+            if tag in _UNICODE_STRINGS:
+                label, encoding = _UNICODE_STRINGS[tag]
                 try:
-                    bytes(value).decode('utf-8')
+                    decoded = bytes(value).decode(encoding)
                 except UnicodeDecodeError as error:
-                    raise ValueError('invalid DER UTF8String') from error
+                    raise ValueError(f'invalid DER {label}') from error
+                if tag == 0x1e and any(ord(character) > 0xffff for character in decoded):
+                    raise ValueError('invalid DER BMPString')
             if tag == 0x12 and any(octet not in _NUMERIC_STRING for octet in value):
                 raise ValueError('invalid DER NumericString')
             if tag == 0x13 and any(octet not in _PRINTABLE_STRING for octet in value):
@@ -366,17 +397,19 @@ def _check_der_time(tag, value, *, allow_fraction=True):
         raise ValueError('invalid DER calendar date')
     if hour > 23 or minute > 59 or second > 60 or (second == 60 and (day, hour, minute) != (last_day, 23, 59)):
         raise ValueError('invalid DER clock time')
+    return year, clock
 
 
 def _check_x509_time(fields):
     tag = 0x17 if fields.next_is(0x17) else 0x18
     value = fields.take(tag)
     try:
-        _check_der_time(tag, value, allow_fraction=False)
+        time = _check_der_time(tag, value, allow_fraction=False)
     except ValueError as error:
         raise ValueError(f'invalid X.509 time encoding: {error}') from error
-    if tag == 0x18 and value[:4] < b'2050':
+    if tag == 0x18 and time[0] < 2050:
         raise ValueError('X.509 dates before 2050 must use UTCTime')
+    return time
 
 
 def _check_certificate_extension_value(oid, critical, encoded):
@@ -554,12 +587,16 @@ def _check_certificate(encoded, *, profile=False, schemas=None):
     issuer = tbs.take(0x30)
     if not issuer:
         raise ValueError('empty certificate issuer Name')
-    _check_issuer_name(issuer)
+    _check_name(issuer)
     validity = _DER(tbs.take(0x30))
-    _check_x509_time(validity)  # notBefore.
-    _check_x509_time(validity)  # notAfter.
+    not_before = _check_x509_time(validity)
+    not_after = _check_x509_time(validity)
     validity.done()
+    if not_before > not_after:
+        raise ValueError('certificate notBefore is later than notAfter')
     subject = tbs.take(0x30)
+    if subject:
+        _check_name(subject, field='subject')
     tbs.take(0x30)  # SubjectPublicKeyInfo.
     for identifier_tag in (0x81, 0x82):
         if tbs.next_is(identifier_tag):
@@ -661,13 +698,13 @@ def _check_crl(encoded, *, profile=False, schemas=None):
     if version_2 and tbs.take(0x02) != b'\x01':
         raise ValueError('expected CRL v2 or omitted v1 version')
     _check_x509_signature(tbs, fields)
-    issuer = tbs.take(0x30)
-    if profile:
-        _check_issuer_name(issuer)
-    _check_x509_time(tbs)  # thisUpdate.
+    _check_name(tbs.take(0x30))
+    this_update = _check_x509_time(tbs)
     if not tbs.next_is(0x17) and not tbs.next_is(0x18):
         raise ValueError('missing CRL nextUpdate')
-    _check_x509_time(tbs)  # nextUpdate.
+    next_update = _check_x509_time(tbs)
+    if this_update > next_update:
+        raise ValueError('CRL thisUpdate is later than nextUpdate')
     if tbs.next_is(0x30):
         revoked = _DER(tbs.take(0x30))
         if profile and not revoked.data:
@@ -675,10 +712,7 @@ def _check_crl(encoded, *, profile=False, schemas=None):
         while revoked.position < len(revoked.data):
             entry = _DER(revoked.take(0x30))
             entry.take(0x02)  # userCertificate.
-            date_tag = 0x17 if entry.next_is(0x17) else 0x18
-            date = entry.take(date_tag)
-            if profile:
-                _check_der_time(date_tag, date)
+            _check_x509_time(entry)  # revocationDate.
             if entry.next_is(0x30):
                 if not version_2:
                     raise ValueError('revoked certificate extensions require CRL v2')

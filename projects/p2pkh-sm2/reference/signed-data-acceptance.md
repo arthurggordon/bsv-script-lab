@@ -16,6 +16,19 @@ and signed-attribute signatures. [GB/T 35275-2026](https://openstd.samr.gov.cn/b
 | PKI assessment | Accepted for the selected trust anchor, applicable caller-supplied CRLs, and the upstream evidence conditions described below. |
 | Chapter 8 encoding decisions | The project accepts the per-OID parameter table and PKCS #9 `messageDigest` identifier below. The acceptance scope is this project profile. Open attribute and extension values depend on the schema for their OID. |
 
+## Regression witnesses from the review of `3b54f9f`
+
+| Rule | Executable evidence |
+| --- | --- |
+| GB/T 35275-2026 §6.6, GB/T 20518-2018 §§5.2.3.4, 5.2.3.6 and 5.3.3.3, and RFC 5280 Appendix A.1 | The three SignedData entry points exercise RFC 5280 naming attribute types and character bounds, including a two-character `countryName` in PrintableString and multibyte DirectoryString bounds. Independently signed metadata exercises the same country field in certificate issuer, certificate subject, and CRL issuer names. Unknown naming OIDs retain open DER values. |
+| X.690 §§8.23.7–8.23.8 | Direct and nested BMPString and UniversalString values exercise fixed-width encodings, valid supplementary characters in UniversalString, truncated values, and forbidden surrogate encodings. The signed-attribute fixtures use signatures that OpenSSL independently verifies. |
+| RFC 5280 §§4.1.2.5, 5.1.2.4–5.1.2.6 | Independently signed certificates and CRLs exercise ascending, equal, and descending endpoints across the 1999/2000 and 2049/2050 boundaries. `revocationDate` fixtures test the 2049/2050 time type boundary and a forbidden fractional second. The CRL fixtures also run through the standalone CRL series entry point. |
+
+[GB/T 35275-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=28A18B702BDC318803E598F5E502E2CC) ·
+[GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
+[X.690](https://www.itu.int/rec/T-REC-X.690/en) ·
+[RFC 5280](https://www.rfc-editor.org/rfc/rfc5280)
+
 ## Regression witnesses from the review of `49175f6`
 
 | Rule | Executable evidence |

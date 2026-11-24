@@ -56,7 +56,7 @@ CLAUSE_EVIDENCE = {
     '6.3.DigestAlgorithmIdentifier': ('single_field', 'digest_set', 'envelope_parameters'),
     '6.4.SignatureAlgorithmIdentifier': ('payment_matrix', 'digest_set', 'envelope_parameters'),
     '6.5.Certificates': ('metadata', 'certificate_fields', 'x509_algorithms'),
-    '6.6.IssuerAndSerialNumber': ('issuer', 'single_field'),
+    '6.6.IssuerAndSerialNumber': ('issuer', 'name_value_types', 'single_field'),
     '6.8.Version': ('payment_matrix', 'version_octet'),
     '6.9.Attribute': ('unsigned_attribute', 'open_value_der', 'attribute_schemas'),
     '7.Data': ('payment_matrix', 'single_field'),
@@ -98,9 +98,10 @@ CLAUSE_EVIDENCE = {
     'GB/T 20518-2018.5.2.4.3.2-3.InformationAccess': ('certificate_extension_shapes',),
     'GB/T 20518-2018.5.2.3.2.SerialNumber': ('certificate_fields', 'signer_serial_length'),
     'GB/T 20518-2018.5.2.3.3.Signature': ('x509_algorithms',),
-    'GB/T 20518-2018.5.2.3.4.Issuer': ('certificate_fields', 'issuer'),
+    'GB/T 20518-2018.5.2.3.4.Issuer': ('certificate_fields', 'issuer', 'x509_name_value_types'),
+    'GB/T 20518-2018.5.2.3.6.Subject': ('x509_name_value_types',),
     'GB/T 20518-2018.5.3.3.2.Signature': ('x509_algorithms',),
-    'GB/T 20518-2018.5.3.3.3.CRLIssuer': ('crl_field_encoding',),
+    'GB/T 20518-2018.5.3.3.3.CRLIssuer': ('crl_field_encoding', 'x509_name_value_types'),
     'GB/T 20518-2018.5.3.4.1-5.CRLExtensionProfile': ('crl_profile',),
     'GB/T 20518-2018.5.3.4.3.CRLNumberSequence': ('crl_series', 'crl_pair', 'crl_published_state'),
     'GB/T 20518-2018.5.3.4.4.DeltaBaseNumber': ('crl_profile', 'crl_pair'),
@@ -117,6 +118,9 @@ CLAUSE_EVIDENCE = {
     'RFC 5280.5.2.4.LocalCRLMetadata': ('crl_revocation_merge',),
     'RFC 5280.5.2.5.CertificateVersionScope': ('crl_legacy_scope',),
     'RFC 5280.4.1.2.5.InclusiveValidity': ('certificate_validity_boundary',),
+    'RFC 5280.4.1.2.5-5.1.2.4-5.X509TimeOrder': ('x509_time_order',),
+    'RFC 5280.5.1.2.6.CRLEntryTimeEncoding': ('crl_entry_time',),
+    'RFC 5280.Appendix.A.1.NameAttributeTypes': ('name_value_types', 'x509_name_value_types'),
     'RFC 5280.5.3.3.IndirectCRLEntryIssuer': ('crl_indirect_issuer', 'crl_merge_rejections'),
     'RFC 5280.6.3.3.c.AuthorityKeyIdentifier': ('crl_merge_rejections',),
     'RFC 5280.6.3.3.a.CRLValidationTime': ('crl_assessment_time',),
@@ -136,6 +140,7 @@ CLAUSE_EVIDENCE = {
     'X.690.8.19.ObjectIdentifier': ('open_value_der',),
     'X.690.8.20.RelativeObjectIdentifier': ('open_value_forms',),
     'X.690.8.9-8.12.SequenceAndSet': ('open_value_forms',),
+    'X.690.8.23.7-8.23.8.WideStringEncoding': ('attribute_wide_string',),
     'X.690.8.23.10.UTF8String': ('open_value_forms',),
     'X.690.10.2.StringEncodingForms': ('open_value_der', 'open_value_forms'),
     'X.690.11.2.1.UnusedBits': ('open_value_der',),
@@ -484,6 +489,64 @@ class SignedDataAcceptance(SignedDataFixtures):
                             check()
         COMPLETED_WITNESSES.add('issuer')
 
+    def test_known_naming_attribute_types_and_bounds(self):
+        signature = self.signatures['direct']
+        cases = []
+        for number, upper in ((3, 64), (4, 32768), (7, 128), (8, 128), (10, 64), (11, 64),
+                              (12, 64), (41, 32768), (42, 32768), (43, 32768), (44, 32768), (65, 128)):
+            oid = f'2.5.4.{number}'
+            for tag, value, error in (
+                (0x05, b'', 'must be a DirectoryString'),
+                (0x0c, b'', 'must contain'),
+                (0x0c, b'A', None),
+                (0x0c, '测'.encode() * upper, None),
+                (0x0c, '测'.encode() * (upper + 1), 'must contain'),
+            ):
+                cases.append((oid, tag, value, error))
+        cases.extend((
+            ('2.5.4.3', 0x14, b'A', None),
+            ('2.5.4.3', 0x1e, '测'.encode('utf-16-be'), None),
+            ('2.5.4.3', 0x1c, '😀'.encode('utf-32-be'), None),
+            ('2.5.4.5', 0x02, b'\x01', 'serialNumber must use PrintableString'),
+            ('2.5.4.5', 0x13, b'', 'serialNumber has an invalid character count'),
+            ('2.5.4.5', 0x13, b'1', None),
+            ('2.5.4.5', 0x13, b'1' * 64, None),
+            ('2.5.4.5', 0x13, b'1' * 65, 'serialNumber has an invalid character count'),
+            ('2.5.4.6', 0x0c, b'CN', 'countryName must use PrintableString'),
+            ('2.5.4.6', 0x13, b'C', 'countryName has an invalid character count'),
+            ('2.5.4.6', 0x13, b'CN', None),
+            ('2.5.4.6', 0x13, b'CHN', 'countryName has an invalid character count'),
+            ('2.5.4.46', 0x16, b'A', 'dnQualifier must use PrintableString'),
+            ('2.5.4.46', 0x13, b'A', None),
+            ('0.9.2342.19200300.100.1.25', 0x0c, b'example', 'domainComponent must use IA5String'),
+            ('0.9.2342.19200300.100.1.25', 0x16, b'example', None),
+            ('1.2.840.113549.1.9.1', 0x0c, b'a@example.org', 'emailAddress must use IA5String'),
+            ('1.2.840.113549.1.9.1', 0x16, b'a@example.org', None),
+            ('1.2.840.113549.1.9.1', 0x16, b'a', None),
+            ('1.2.840.113549.1.9.1', 0x16, b'', 'emailAddress has an invalid character count'),
+            ('1.2.840.113549.1.9.1', 0x16, b'a' * 255, None),
+            ('1.2.840.113549.1.9.1', 0x16, b'a' * 256, 'emailAddress has an invalid character count'),
+            ('1.2.3.4', 0x02, b'\x01', None),
+        ))
+        for oid, tag, value, error in cases:
+            rdn = der(0x31, der(0x30, ObjectIdentifier(oid).dump() + der(tag, value)))
+            sid = der(0x30, der(0x30, rdn) + der(0x02, b'\x01'))
+            envelope = signed_data(signature, attached=MESSAGE, sid=sid)
+            checks = (
+                ('format', lambda: validate_signed_data_format(envelope, require_signer=True), None),
+                ('general', lambda: verify_signed_data(envelope, {sid: (self.key, USER_ID)}), MESSAGE),
+                ('payment', lambda: signed_data_signer(lambda *_: envelope, self.key,
+                                                       signer_identifier=sid)(MESSAGE, USER_ID), self.raw_direct),
+            )
+            for endpoint, check, expected in checks:
+                with self.subTest(oid=oid, tag=tag, size=len(value), endpoint=endpoint):
+                    if error is None:
+                        self.assertEqual(check(), expected)
+                    else:
+                        with self.assertRaisesRegex(ValueError, f'invalid DER issuer Name: .*{error}'):
+                            check()
+        COMPLETED_WITNESSES.add('name_value_types')
+
     def test_signer_serial_number_respects_the_der_octet_limit(self):
         body, _ = remove_sequence(ISSUER_AND_SERIAL)
         issuer = next(encoded_fields(body))
@@ -508,8 +571,6 @@ class SignedDataAcceptance(SignedDataFixtures):
         COMPLETED_WITNESSES.add('signer_serial_length')
 
     def test_open_attribute_times_require_valid_calendar_and_clock_values(self):
-        signature = self.signatures['direct']
-        oid = ObjectIdentifier('1.2.3.4').dump()
         cases = (
             (0x17, b'240229235959Z', None),
             (0x18, b'20000229000000.5Z', None),
@@ -523,27 +584,51 @@ class SignedDataAcceptance(SignedDataFixtures):
             (0x18, b'20500228000061Z', 'clock time'),
         )
         for tag, value, error in cases:
-            attribute = der(0x30, oid + der(0x31, der(tag, value)))
-            unsigned = signed_data(signature, attached=MESSAGE, unsigned_attrs=der(0xa1, attribute))
-            attributes = der(0xa0, b''.join(sorted((self.attribute, attribute))))
-            signed_signature = self.external_signature(attributes)
-            self.assertTrue(self.external_verify(signed_signature, attributes))
-            signed = signed_data(signed_signature, attached=MESSAGE, signed_attrs=attributes)
-            checks = (
-                (lambda: validate_signed_data_format(unsigned, require_signer=True), None),
-                (lambda: self.verify_attached(unsigned), MESSAGE),
-                (lambda: self.apply_adapter(unsigned), self.raw_direct),
-                (lambda: validate_signed_data_format(signed, require_signer=True), None),
-                (lambda: self.verify_attached(signed), MESSAGE),
-            )
-            for index, (check, expected) in enumerate(checks):
-                with self.subTest(time=value, entry_point=index):
-                    if error is None:
-                        self.assertEqual(check(), expected)
-                    else:
-                        with self.assertRaisesRegex(ValueError, error):
-                            check()
+            self.check_open_attribute_value(der(tag, value), error)
         COMPLETED_WITNESSES.add('attribute_calendar_time')
+
+    def test_open_attribute_wide_strings_require_complete_unicode_code_points(self):
+        cases = (
+            (0x1e, '测'.encode('utf-16-be'), None),
+            (0x1e, b'', None),
+            (0x1e, b'A', 'BMPString'),
+            (0x1e, b'\xd8\x00', 'BMPString'),
+            (0x1e, '😀'.encode('utf-16-be'), 'BMPString'),
+            (0x1c, '测😀'.encode('utf-32-be'), None),
+            (0x1c, b'', None),
+            (0x1c, b'ABC', 'UniversalString'),
+            (0x1c, b'\x00\x00\xd8\x00', 'UniversalString'),
+            (0x1c, b'\x00\x11\x00\x00', 'UniversalString'),
+        )
+        for tag, value, label in cases:
+            error = f'invalid DER {label}' if label else None
+            encoded = der(tag, value)
+            self.check_open_attribute_value(encoded, error)
+            self.check_open_attribute_value(der(0x30, encoded), error)
+        COMPLETED_WITNESSES.add('attribute_wide_string')
+
+    def check_open_attribute_value(self, encoded, error):
+        oid = ObjectIdentifier('1.2.3.4').dump()
+        attribute = der(0x30, oid + der(0x31, encoded))
+        unsigned = signed_data(self.signatures['direct'], attached=MESSAGE, unsigned_attrs=der(0xa1, attribute))
+        attributes = der(0xa0, b''.join(sorted((self.attribute, attribute))))
+        signature = self.external_signature(attributes)
+        self.assertTrue(self.external_verify(signature, attributes))
+        signed = signed_data(signature, attached=MESSAGE, signed_attrs=attributes)
+        checks = (
+            ('format unsigned', lambda: validate_signed_data_format(unsigned, require_signer=True), None),
+            ('general unsigned', lambda: self.verify_attached(unsigned), MESSAGE),
+            ('payment unsigned', lambda: self.apply_adapter(unsigned), self.raw_direct),
+            ('format signed', lambda: validate_signed_data_format(signed, require_signer=True), None),
+            ('general signed', lambda: self.verify_attached(signed), MESSAGE),
+        )
+        for endpoint, check, expected in checks:
+            with self.subTest(attribute_value=encoded.hex(), endpoint=endpoint):
+                if error is None:
+                    self.assertEqual(check(), expected)
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        check()
 
     def test_every_proper_prefix_and_extra_trailing_octet_is_rejected(self):
         envelope = signed_data(self.signatures['direct'], attached=MESSAGE)
@@ -1067,6 +1152,91 @@ class SignedDataReview(SignedDataFixtures):
     def record_review_metadata(cls, rule, name, tag, encoded, *, conforming):
         envelope = signed_data(cls.signatures['direct'], attached=MESSAGE, metadata=der(tag, encoded))
         cls.record_review_case(rule, name, envelope, conforming=conforming)
+
+    def check_signed_metadata(self, tag, member, error=None):
+        envelope = signed_data(self.signatures['direct'], attached=MESSAGE, metadata=der(tag, member))
+        checks = [
+            ('format', lambda: validate_signed_data_format(envelope, require_signer=True), None),
+            ('general', lambda: self.verify_attached(envelope), MESSAGE),
+            ('payment', lambda: self.apply_adapter(envelope), self.raw_direct),
+        ]
+        if tag == 0xa1:
+            checks.append(('CRL series', lambda: validate_crl_series([member]), None))
+        for endpoint, check, expected in checks:
+            with self.subTest(endpoint=endpoint):
+                if error is None:
+                    self.assertEqual(check(), expected)
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        check()
+
+    def test_x509_naming_attribute_types_in_issuer_and_subject(self):
+        certificate, crl = self.issue_certificate_and_crl(version_2_crl=True)
+        country = ObjectIdentifier('2.5.4.6').dump()
+        for label, metadata_tag, encoded, field in (
+            ('certificate issuer', 0xa0, certificate, 3),
+            ('certificate subject', 0xa0, certificate, 5),
+            ('CRL issuer', 0xa1, crl, 2),
+        ):
+            body, algorithm = x509_signed_parts(encoded)
+            fields = list(encoded_fields(body))
+            if metadata_tag == 0xa0:
+                fields = fields[:7]  # End-entity fixture, without OpenSSL's default CA extensions.
+            for name_tag, error in ((0x13, None), (0x0c, 'countryName must use PrintableString')):
+                fields[field] = der(0x30, der(0x31, der(0x30, country + der(name_tag, b'CN'))))
+                member = self.sign_review_metadata(b''.join(fields), algorithm)
+                with self.subTest(field=label, tag=name_tag):
+                    self.check_signed_metadata(metadata_tag, member, error)
+        COMPLETED_WITNESSES.add('x509_name_value_types')
+
+    def test_x509_time_intervals_use_chronological_order_across_year_encodings(self):
+        certificate, crl = self.issue_certificate_and_crl(version_2_crl=True)
+        utc_1999 = der(0x17, b'991231235959Z')
+        utc_2000 = der(0x17, b'000101000000Z')
+        earlier_2049 = der(0x17, b'491231235958Z')
+        utc_2049 = der(0x17, b'491231235959Z')
+        generalized_2050 = der(0x18, b'20500101000000Z')
+        cases = (
+            (utc_1999, utc_2000, True), (utc_2000, utc_1999, False),
+            (utc_2049, generalized_2050, True), (generalized_2050, utc_2049, False),
+            (earlier_2049, utc_2049, True), (utc_2049, earlier_2049, False),
+            (utc_2049, utc_2049, True),
+        )
+        for tag, encoded, error in (
+            (0xa0, certificate, 'certificate notBefore is later than notAfter'),
+            (0xa1, crl, 'CRL thisUpdate is later than nextUpdate'),
+        ):
+            body, algorithm = x509_signed_parts(encoded)
+            fields = list(encoded_fields(body))
+            if tag == 0xa0:
+                fields = fields[:7]  # End-entity fixture, without OpenSSL's default CA extensions.
+            for first, second, accepted in cases:
+                if tag == 0xa0:
+                    fields[4] = der(0x30, first + second)
+                else:
+                    fields[3:5] = [first, second]
+                member = self.sign_review_metadata(b''.join(fields), algorithm)
+                with self.subTest(metadata=tag, first=first, second=second):
+                    self.check_signed_metadata(tag, member, None if accepted else error)
+        COMPLETED_WITNESSES.add('x509_time_order')
+
+    def test_crl_revocation_date_uses_the_x509_time_choice(self):
+        _, crl = self.issue_certificate_and_crl(version_2_crl=True)
+        body, algorithm = x509_signed_parts(crl)
+        version, signature, issuer, _, _, extensions = encoded_fields(body)
+        prefix = version + signature + issuer + der(0x18, b'20500102000000Z') + der(0x18, b'20500103000000Z')
+        cases = (
+            (0x17, b'491231235959Z', None),
+            (0x18, b'20491231235959Z', 'dates before 2050 must use UTCTime'),
+            (0x18, b'20500101000000Z', None),
+            (0x18, b'20500101000000.1Z', 'invalid DER time fraction'),
+        )
+        for tag, date, error in cases:
+            revoked = der(0x30, der(0x30, der(0x02, b'\x01') + der(tag, date)))
+            member = self.sign_review_metadata(prefix + revoked + extensions, algorithm)
+            with self.subTest(date=date):
+                self.check_signed_metadata(0xa1, member, error)
+        COMPLETED_WITNESSES.add('crl_entry_time')
 
     @classmethod
     def check_attribute_fixtures(cls):
