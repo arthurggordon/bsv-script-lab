@@ -9,7 +9,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 
-from asn1crypto.core import Integer, ObjectIdentifier, SetOf
+from asn1crypto.core import Integer, ObjectIdentifier, OctetString, SetOf
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -76,7 +76,7 @@ CLAUSE_EVIDENCE = {
     '8.table3.unsignedAttrs': ('metadata', 'unsigned_attribute', 'open_value_der', 'open_value_forms'),
     '8.direct_signature': ('external_signature', 'payment_matrix'),
     '8.signed_attrs_signature': ('signed_attrs_policy', 'verify_signed_attributes', 'signed_attrs_encoding'),
-    '8.messageDigest': ('verify_signed_attributes',),
+    '8.messageDigest': ('verify_signed_attributes', 'message_digest_identifier'),
     'A.1.example': ('appendix_a1',),
     'GB/T 20518-2018.5.2.2.SM2ParametersAndSignatureValue': ('x509_parameters', 'x509_signature'),
     'GB/T 20518-2018.5.2.2.VersionDependencies': ('x509_extensions',),
@@ -435,12 +435,11 @@ class SignedDataAcceptance(SignedDataFixtures):
         for field, form in (('digest_algorithms', sm3_without_parameters),
                             ('signer_digest', sm3_without_parameters),
                             ('algorithm', sm2_without_parameters)):
-            for parameter, reason in ((der(0x05, b'\0'), 'invalid DER NULL'),
-                                      (der(0x02, b'\x01'), 'trailing or unsupported'),
-                                      (NULL + NULL, 'trailing or unsupported')):
+            for parameter in (der(0x05, b'\0'), der(0x02, b'\x01'), NULL + NULL):
                 invalid = der(0x30, form[2:] + parameter)
-                with self.subTest(field=field, parameter=parameter.hex()), self.assertRaisesRegex(ValueError, reason):
-                    self.apply_adapter(signed_data(signature, **{field: invalid}))
+                with self.subTest(field=field, parameter=parameter.hex()):
+                    with self.assertRaisesRegex(ValueError, 'unsupported SignedData algorithm parameters'):
+                        self.apply_adapter(signed_data(signature, **{field: invalid}))
         COMPLETED_WITNESSES.add('digest_set')
 
     def test_pinned_issuer_requires_der_rdn_structure(self):
@@ -603,7 +602,7 @@ class SignedDataAcceptance(SignedDataFixtures):
             (digest_attribute(), 'exactly one messageDigest'),
             (digest_attribute(der(4, digest), der(4, wrong_digest)), 'exactly one messageDigest'),
             (digest_attribute(der(4, wrong_digest)), 'differs from SM3'),
-            (digest_attribute(der(4, digest[:-1])), 'differs from SM3'),
+            (digest_attribute(der(4, digest[:-1])), 'messageDigest must contain 32 SM3 octets'),
             (digest_attribute(der(0x16, b'not an octet string')), 'unexpected or truncated'),
             (b''.join(sorted((self.attribute, alternate_attr), reverse=True)), 'out of order'),
         )
@@ -622,6 +621,49 @@ class SignedDataAcceptance(SignedDataFixtures):
             envelope = signed_data(valid, signed_attrs=der(0xa0, attrs))
             verify_signed_data(envelope, self.trusted_signers, detached_content=OTHER_MESSAGE)
         COMPLETED_WITNESSES.add('verify_signed_attributes')
+
+    def test_message_digest_identifier_and_schema_are_bound_to_signed_attributes(self):
+        self.assertEqual(MESSAGE_DIGEST_OID, ObjectIdentifier('1.2.840.113549.1.9.4').dump())
+        digest = self.openssl('dgst', '-sm3', '-binary', data=MESSAGE)
+        typed_digest = der(0x31, der(0x04, digest))
+        sibling_oid = ObjectIdentifier('1.2.840.113549.1.9.5').dump()
+        sibling_attribute = der(0x30, sibling_oid + typed_digest)
+        wrapped_content = self.openssl('dgst', '-sm3', '-binary', data=der(0x04, MESSAGE))
+        wrapped_digest = der(0x30, MESSAGE_DIGEST_OID + der(0x31, der(0x04, wrapped_content)))
+        long_digest = der(0x30, MESSAGE_DIGEST_OID + der(0x31, der(0x04, digest + b'\x00')))
+        schemas = {'1.2.840.113549.1.9.4': Integer, '1.2.840.113549.1.9.5': OctetString}
+        missing = 'exactly one messageDigest'
+        length_error = 'messageDigest must contain 32 SM3 octets'
+        cases = (
+            ('fixed identifier', self.attribute, b'', None, None),
+            ('wrong identifier, correct digest', sibling_attribute, b'', missing, missing),
+            ('correct identifier in unsignedAttrs only', sibling_attribute, der(0xa1, self.attribute), missing, missing),
+            ('digest covers content DER wrapper', wrapped_digest, b'', None, 'differs from SM3'),
+            ('digest is 33 octets', long_digest, b'', length_error, length_error),
+        )
+        for (encoding, tag), (label, attributes, unsigned, format_error, signature_error) in product(
+                (('context-field', 0xa0), ('cms-set', 0x31)), cases):
+            payload = der(tag, attributes)
+            signature = self.external_signature(payload)
+            self.assertTrue(self.external_verify(signature, payload))
+            for attached in (None, MESSAGE):
+                envelope = signed_data(signature, attached=attached, signed_attrs=der(0xa0, attributes),
+                                       unsigned_attrs=unsigned)
+                detached = MESSAGE if attached is None else None
+                with self.subTest(encoding=encoding, attached=attached is not None, case=label):
+                    if format_error is None:
+                        validate_signed_data_format(envelope, require_signer=True, attribute_schemas=schemas)
+                    else:
+                        with self.assertRaisesRegex(ValueError, format_error):
+                            validate_signed_data_format(envelope, require_signer=True, attribute_schemas=schemas)
+                    if signature_error is None:
+                        self.assertEqual(verify_signed_data(envelope, self.trusted_signers, detached_content=detached,
+                                                            signed_attrs_encoding=encoding, attribute_schemas=schemas), MESSAGE)
+                    else:
+                        with self.assertRaisesRegex(ValueError, signature_error):
+                            verify_signed_data(envelope, self.trusted_signers, detached_content=detached,
+                                               signed_attrs_encoding=encoding, attribute_schemas=schemas)
+        COMPLETED_WITNESSES.add('message_digest_identifier')
 
     def test_embedded_certificate_issuer_and_serial_boundaries(self):
         cases = (
@@ -2350,23 +2392,26 @@ class SignedDataReview(SignedDataFixtures):
         signature_oid = bytes.fromhex('06092a811ccf5501822d01')
         digest_identifiers = tuple(der(0x30, oid + params) for oid, params in product(digest_oids, (b'', NULL)))
         signature_identifiers = tuple(der(0x30, signature_oid + params) for params in (b'', NULL))
-        cases = tuple(product(digest_identifiers, digest_identifiers, signature_identifiers))
-        self.assertEqual(len(set(cases)), 32)
-        for outer, inner, signer_algorithm in cases:
-            with self.subTest(outer=outer.hex(), inner=inner.hex(), signature=signer_algorithm.hex()):
-                envelope = signed_data(self.signatures['direct'], attached=MESSAGE, digest_algorithms=outer,
+        cases = tuple(product(digest_identifiers, digest_identifiers, signature_identifiers, (None, MESSAGE)))
+        self.assertEqual(len(set(cases)), 64)
+        for outer, inner, signer_algorithm, attached in cases:
+            with self.subTest(outer=outer.hex(), inner=inner.hex(), signature=signer_algorithm.hex(), attached=attached is not None):
+                envelope = signed_data(self.signatures['direct'], attached=attached, digest_algorithms=outer,
                                        signer_digest=inner, algorithm=signer_algorithm)
-                validate_signed_data_format(envelope)
-                self.assertEqual(self.verify_attached(envelope), MESSAGE)
+                validate_signed_data_format(envelope, require_signer=True)
+                self.assertEqual(verify_signed_data(envelope, self.trusted_signers,
+                                                    detached_content=MESSAGE if attached is None else None), MESSAGE)
                 self.assertEqual(self.apply_adapter(envelope), self.raw_direct)
-        for field, oid in (('digest_algorithms', digest_oids[0]), ('signer_digest', digest_oids[1]),
-                           ('algorithm', signature_oid)):
-            for parameters in (der(0x05, b'\x01'), der(0x04, b'')):
+        fields = (('digest_algorithms', digest_oids), ('signer_digest', digest_oids), ('algorithm', (signature_oid,)))
+        invalid_parameters = (der(0x05, b'\x01'), der(0x04, b''), der(0x02, b'\x01'),
+                              b'\x05', b'\x05\x81\x00', b'\x25\x00', NULL + NULL)
+        for field, oids in fields:
+            for oid, parameters in product(oids, invalid_parameters):
                 envelope = signed_data(self.signatures['direct'], attached=MESSAGE,
                                        **{field: der(0x30, oid + parameters)})
                 for check in (validate_signed_data_format, self.verify_attached, self.apply_adapter):
-                    with self.subTest(field=field, params=parameters.hex(), entry_point=check.__name__):
-                        with self.assertRaises(ValueError):
+                    with self.subTest(field=field, oid=oid.hex(), params=parameters.hex(), entry_point=check.__name__):
+                        with self.assertRaisesRegex(ValueError, 'unsupported SignedData algorithm parameters'):
                             check(envelope)
         hmac_sm3 = bytes.fromhex('300b06092a811ccf5501831102')
         for field in ('digest_algorithms', 'signer_digest'):

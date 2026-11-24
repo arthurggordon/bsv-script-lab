@@ -14,7 +14,7 @@ and signed-attribute signatures. [GB/T 35275-2026](https://openstd.samr.gov.cn/b
 | SM2 payment | Accepted for the declared single-signer, direct-signature wallet profile. The payment matrix, isolated version-octet tests, independent provider, and BSV Node replay are the release evidence. |
 | General SignedData | Accepted for the documented project profile. The strict format check and verifier enforce the minimum signer count. The verifier uses the original DER `[0]` view for signed attributes by default and supports a separately selected CMS preimage. The algorithm parameter matrix and attribute OID choices are recorded below. |
 | PKI assessment | Accepted for the selected trust anchor, applicable caller-supplied CRLs, and the upstream evidence conditions described below. |
-| Complete GB/T 35275-2026 Chapter 8 declaration | Open pending the normative per-OID parameter contract and identifier for `messageDigest`. Open attribute and extension values depend on the schema for their OID. |
+| Chapter 8 encoding decisions | The project accepts the per-OID parameter table and PKCS #9 `messageDigest` identifier below. The acceptance scope is this project profile. Open attribute and extension values depend on the schema for their OID. |
 
 ## Run the acceptance fixture
 
@@ -117,11 +117,10 @@ cases pass with the fix. Six independent mutations removed the matching
 algorithm check or one of the BIT STRING, OBJECT IDENTIFIER and OCTET STRING
 checks, and each mutation failed its targeted assertions.
 
-For signed attributes, the verifier uses the CMS `messageDigest` OID
-1.2.840.113549.1.9.4 and the universal DER SET tag as the signing input.
-Appendix A.1 is a direct-signature example. The OpenSSL fixtures sign the
-attribute bytes independently and distinguish the SET signing input from the
-envelope's implicit context tag. [RFC 5652 §§5.4 and 11.2](https://www.rfc-editor.org/rfc/rfc5652)
+For signed attributes, the verifier uses the PKCS #9 `messageDigest` OID
+1.2.840.113549.1.9.4 and the field's DER `[0]` tag by default. The OpenSSL
+fixtures independently sign both this input and the separately selected CMS
+SET input. Appendix A.1 supplies a direct-signature example. [RFC 5652 §§5.4 and 11.2](https://www.rfc-editor.org/rfc/rfc5652)
 
 The completeness claim covers the two declared products and the explicit
 prefix and suffix families. The other tests are targeted witnesses. More
@@ -173,7 +172,7 @@ implementation matched every expected outcome.
 | GB/T 20518-2018 §§5.2.2, 5.2.4.1 and 5.3.2 | Both verification entry points exercise certificate v1, v2 and v3, CRL v1 and v2, and version restrictions for unique identifiers and extensions. Certificate, CRL and revoked-entry extensions are checked for unique OIDs, DER DEFAULT omission, exactly one wrapped DER value and the supported extension payload type. | Extension-specific rules are tracked below. |
 | GB/T 35275-2026 §6.9 and §8 | Schema-aware verification checks a declared open type in both attribute fields. An independent signature remains valid when an inner SET OF is unsorted or the value has the wrong type. The ASN.1 schema check rejects both cases and identifies missing schemas explicitly. The format verifier applies the same declared DER type check to extension values. | Private attribute and extension OIDs require their declaring ASN.1 schemas and profile constraints. |
 | GB/T 35275-2026 §8 signer-set cardinality | `require_signer=True` and signature verification require at least one signer in all content modes. The default structural diagnostic can inspect the empty ASN.1 set. A wrong tag fails the format check. One and multiple signers are covered. | Covered for the declared framing and cardinality cases. |
-| GB/T 35275-2026 §§6.3–6.4 and §8 signed input | The envelope fixture enumerates 32 combinations of the two digest OIDs and absent or NULL parameters at all three algorithm fields. Format validation and both signature entry points execute every row. Independent OpenSSL fixtures pin `[0]` as the project default and require an explicit CMS setting for universal SET signatures, in both content modes. | The signed-attribute rule follows the field named by §8. The matrix establishes the project's envelope parameter interoperability behavior. A normative per-OID parameter contract remains open. |
+| GB/T 35275-2026 §§6.3–6.4 and §8 signed input | The envelope fixture enumerates 32 combinations of the two digest OIDs and absent or NULL parameters at all three algorithm fields in each content mode. Format validation and both signature entry points execute every row. Independent OpenSSL fixtures pin `[0]` as the project default and require an explicit CMS setting for universal SET signatures, in both content modes. | The signed-attribute rule follows the field named by §8. The matrix verifies the exact parameter encodings in the project table below. |
 
 The v2 certificate structural test uses `asn1crypto` because
 `cryptography` rejects certificate version v2 at load time. The
@@ -362,8 +361,15 @@ OpenSSL witnesses check both directions of rejection with identical
 attribute members, and pin the default in attached and detached mode.
 Section 8 defines the `messageDigest` value and its SM3 binding. The
 project identifies this attribute with PKCS #9 `1.2.840.113549.1.9.4`,
-as documented for CMS in RFC 5652 §11.2. Sections 6.9 and 8 name the
-attribute and leave its numerical OID unstated.
+as documented in RFC 2985 Appendix A and RFC 5652 §11.2. Sections 6.9
+and 8 name the attribute and leave its numerical OID unstated. For each
+signer with `signedAttrs`, the project requires exactly one instance
+containing exactly one primitive 32-octet DER `OCTET STRING`. Signature
+verification compares it to SM3 of the original content octets. The test
+matrix signs the correct digest, a neighboring OID, a digest carried
+only in `unsignedAttrs`, a digest of the DER content wrapper, and a
+33-octet digest under both preimages, with attached and detached content.
+It also pins the built-in schema when the caller supplies schemas.
 
 Section 6.2 points to the optional, algorithm-defined `parameters` field
 of GB/T 20518-2018 §5.2.2. Its SM2 no-parameter statement appears in the
@@ -375,15 +381,31 @@ keyed SM3 (`.401.2`) and SM2-with-SM3 (`.501`) substitutes in their
 respective envelope contexts. GB/T 35275-2026 took effect on 2026-11-01.
 GB/T 33560-2026 takes effect on 2026-12-01.
 Appendix A.1 is informative and its historical envelope contains NULL
-for both unkeyed SM3 identifiers and the SM2-1 identifier. The project
-accepts absent and canonical NULL parameters for the supported envelope
-OIDs and rejects the tested malformed or unrelated parameter types.
-These sources leave a normative per-OID parameter contract unresolved.
+for both occurrences of unkeyed SM3 and the SM2-1 identifier. The project
+enforces the following receive table. Each accepted form is the entire
+encoding following the OID in its `AlgorithmIdentifier`.
+
+| Field | Algorithm OID | Accepted parameters |
+| --- | --- | --- |
+| `digestAlgorithms`, `SignerInfo.digestAlgorithm` | `1.2.156.10197.1.401` | Absent or the two DER octets `05 00` |
+| `digestAlgorithms`, `SignerInfo.digestAlgorithm` | `1.2.156.10197.1.401.1` | Absent or the two DER octets `05 00` |
+| `SignerInfo.signatureAlgorithm` | `1.2.156.10197.1.301.1` | Absent or the two DER octets `05 00` |
+
+The tests cover all 64 accepted combinations of these fields and content
+modes, and check seven excluded parameter encodings for every field/OID
+pair. These include an OCTET STRING, INTEGER, truncated and constructed
+NULL, a NULL with a payload, nonminimal length and a duplicate NULL. The
+published sources define the algorithm identifiers and the optional
+field, and provide an informative example of NULL. The exact two-form
+receive table and the numerical attribute identifier are project
+interoperability decisions. This evidence supports acceptance of the
+implemented profile.
 [GB/T 35275-2026](https://std.samr.gov.cn/gb/search/gbDetailedCNF?id=511EBC5968889318E06397BE0A0AFBD5) ·
 [GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
 [GB/T 33560-2017](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=252CF0F72A7BE339A56DEA7D774E8994) ·
 [GB/T 33560-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=9BF813CEEAFB58A19534FF861465D8FD) ·
 [ITU-T X.690 §8.14](https://www.itu.int/rec/T-REC-X.690/en) ·
+[PKCS #9, RFC 2985 Appendix A](https://www.rfc-editor.org/rfc/rfc2985.html#appendix-A) ·
 [RFC 5652 §5.4](https://www.rfc-editor.org/rfc/rfc5652#section-5.4) ·
 [RFC 5652 §11.2](https://www.rfc-editor.org/rfc/rfc5652#section-11.2)
 

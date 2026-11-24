@@ -25,11 +25,19 @@ _SM3 = bytes.fromhex('2a811ccf55018311')
 _SM3_UNKEYED = bytes.fromhex('2a811ccf5501831101')
 _SM2_SIGNATURE = bytes.fromhex('2a811ccf5501822d01')
 _SM2_WITH_SM3 = bytes.fromhex('2a811ccf55018375')
+# Complete DER encodings accepted for the optional envelope parameters field.
+_DIGEST_ALGORITHM_PARAMETERS = {
+    _SM3: (b'', b'\x05\x00'),
+    _SM3_UNKEYED: (b'', b'\x05\x00'),
+}
+_SIGNATURE_ALGORITHM_PARAMETERS = {
+    _SM2_SIGNATURE: (b'', b'\x05\x00'),
+}
 _EC_PUBLIC_KEY = bytes.fromhex('2a8648ce3d0201')
 _CURVE_SM2 = bytes.fromhex('2a811ccf5501822d')
 _SM2_X509_SIGNATURE_OIDS = frozenset(ObjectIdentifier(contents=oid).dotted
                                       for oid in (_SM2_SIGNATURE, _SM2_WITH_SM3))
-_MESSAGE_DIGEST = bytes.fromhex('2a864886f70d010904')
+_MESSAGE_DIGEST = ObjectIdentifier('1.2.840.113549.1.9.4').contents  # PKCS #9 messageDigest
 _BASIC_CONSTRAINTS = bytes.fromhex('551d13')
 _NAME_CONSTRAINTS = bytes.fromhex('551d1e')
 _POLICY_MAPPINGS = bytes.fromhex('551d21')
@@ -114,19 +122,17 @@ class AmbiguousCertificateIssuer(ValueError):
     """An indirect CRL entry needs an authenticated issuer DN selection."""
 
 
-def _algorithm(fields, *allowed):
+def _algorithm(fields, allowed_parameters):
     algorithm = _DER(fields.take(0x30))
-    if algorithm.take(0x06) not in allowed:
+    parameters = allowed_parameters.get(algorithm.take(0x06))
+    if parameters is None:
         raise ValueError('unexpected SignedData algorithm')
-    # AlgorithmIdentifier permits an omitted parameters field. The SM3 and
-    # SM2-1 identifiers in GB/T 35275-2026 Appendix A.1 use explicit NULL.
-    if algorithm.next_is(0x05) and algorithm.take(0x05):
-        raise ValueError('invalid DER NULL parameters')
-    algorithm.done()
+    if algorithm.data[algorithm.position:] not in parameters:
+        raise ValueError('unsupported SignedData algorithm parameters encoding')
 
 
 def _digest_algorithm(fields):
-    _algorithm(fields, _SM3, _SM3_UNKEYED)
+    _algorithm(fields, _DIGEST_ALGORITHM_PARAMETERS)
 
 
 def _minimal_integer(value):
@@ -273,14 +279,20 @@ def _check_schema_der(schema, encoded, label):
         raise ValueError(f'invalid DER value for {label}: {error}') from error
 
 
+def _message_digest_octets(encoded):
+    value = _DER(encoded)
+    digest = value.take(0x04)
+    value.done()
+    if len(digest) != 32:
+        raise ValueError('messageDigest must contain 32 SM3 octets')
+    return digest
+
+
 def _check_attribute_schema(oid, values, schemas):
     if oid == _MESSAGE_DIGEST:
         if len(values) != 1:
             raise ValueError('messageDigest must have one OCTET STRING value')
-        digest = _DER(values[0])
-        if len(digest.take(0x04)) != 32:
-            raise ValueError('messageDigest must contain 32 SM3 octets')
-        digest.done()
+        _message_digest_octets(values[0])
         return
 
     identifier = ObjectIdentifier(contents=oid).dotted
@@ -1230,7 +1242,7 @@ def _signer_identifier(signer):
 
 
 def _signer_signature(signer, attribute_schemas=None):
-    _algorithm(signer, _SM2_SIGNATURE)
+    _algorithm(signer, _SIGNATURE_ALGORITHM_PARAMETERS)
     signature = _signature(signer.take(0x04))
     _check_optional_set(signer, 0xa1, 'unsignedAttrs',
                         lambda member: _attribute(member, attribute_schemas), nonempty=True)
@@ -1269,13 +1281,9 @@ def _check_signed_attributes(encoded, content_digest, attribute_schemas):
             digests.append(values)
     if len(digests) != 1 or len(digests[0]) != 1:
         raise ValueError('signedAttrs requires exactly one messageDigest with one value')
-    value = _DER(digests[0][0])
-    digest = value.take(0x04)
+    digest = _message_digest_octets(digests[0][0])
     if content_digest is not None and digest != content_digest:
         raise ValueError('signedAttrs messageDigest differs from SM3 of the content')
-    if content_digest is None and len(digest) != 32:
-        raise ValueError('signedAttrs messageDigest must contain 32 SM3 octets')
-    value.done()
 
 
 def _general_fields(envelope, *, require_signer=False, x509_profile=False, extension_schemas=None):

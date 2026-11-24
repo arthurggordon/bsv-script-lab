@@ -108,6 +108,13 @@ direct signatures over the content octets and signatures over the DER
 sole `messageDigest` value matches SM3 of the content octets. The caller
 establishes signer trust and any certificate path or revocation policy.
 
+The envelope accepts SM3 OIDs `1.2.156.10197.1.401` and
+`1.2.156.10197.1.401.1` in digest fields, and SM2-1 OID
+`1.2.156.10197.1.301.1` in the signature algorithm field. Each accepts
+absent parameters or the exact DER NULL `05 00`. The required digest in
+`signedAttrs` uses PKCS #9 OID `1.2.840.113549.1.9.4` and carries one DER
+OCTET STRING of 32 bytes. [Profile evidence](signed-data-acceptance.md#signed-attributes-and-algorithm-parameters)
+
 For schema-aware `AttributeValue` validation, pass `attribute_schemas`, a
 mapping from dotted attribute OIDs to `asn1crypto` ASN.1 classes. Each
 declared value is decoded as its ASN.1 type and checked against the canonical
