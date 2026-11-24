@@ -20,6 +20,7 @@ var (
 	oidSignedData = asn1.ObjectIdentifier{1, 2, 156, 10197, 6, 1, 4, 2, 2}
 	oidSM3        = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 401}
 	oidSM2Sign    = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 301, 1}
+	oidSM2WithSM3 = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 501}
 )
 
 type algorithmIdentifier struct {
@@ -67,7 +68,17 @@ func main() {
 	messageHex := flag.String("message", "", "hex-encoded message")
 	keyHex := flag.String("key", "", "hex-encoded 32-byte test private key")
 	detached := flag.Bool("detached", false, "omit the signed content")
+	signerVersion := flag.Int("signer-version", 2, "SignerInfo version (1 or 2)")
 	flag.Parse()
+
+	signatureAlgorithm := oidSM2Sign
+	switch *signerVersion {
+	case 1:
+		signatureAlgorithm = oidSM2WithSM3
+	case 2:
+	default:
+		fail(fmt.Errorf("SignerInfo version must be 1 or 2"))
+	}
 
 	message, err := hex.DecodeString(*messageHex)
 	if err != nil {
@@ -111,10 +122,10 @@ func main() {
 		DigestAlgorithms: []algorithmIdentifier{{Algorithm: oidSM3}},
 		Content:          encapsulated,
 		SignerInfos: []signerInfo{{
-			Version:            2,
+			Version:            *signerVersion,
 			SignerIdentifier:   identifier,
 			DigestAlgorithm:    algorithmIdentifier{Algorithm: oidSM3},
-			SignatureAlgorithm: algorithmIdentifier{Algorithm: oidSM2Sign},
+			SignatureAlgorithm: algorithmIdentifier{Algorithm: signatureAlgorithm},
 			Signature:          signature,
 		}},
 	})
@@ -133,7 +144,7 @@ func main() {
 		EnvelopeHex:         hex.EncodeToString(envelope),
 		PublicKeyHex:        hex.EncodeToString(publicKey),
 		SignerIdentifierHex: hex.EncodeToString(identifierDER),
-		SignerVersion:       2,
+		SignerVersion:       *signerVersion,
 	}); err != nil {
 		fail(err)
 	}

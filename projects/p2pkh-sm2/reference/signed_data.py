@@ -1,4 +1,4 @@
-"""GB/T 35275-2026 SignedData profile for direct SM2 payment signatures."""
+"""SignedData profiles for direct SM2 payment signatures."""
 
 from sm2 import N, USER_ID, be32, parse_public, verify
 
@@ -71,7 +71,19 @@ def _signature(der):
     return bytes(signature)
 
 
-def _direct_signature(envelope, message, signer_identifier):
+def _check_issuer_and_serial_number(identifier):
+    outer = _DER(identifier)
+    fields = _DER(outer.take(0x30))
+    outer.done()
+    fields.take(0x30)  # X.509 issuer Name
+    serial = fields.take(0x02)
+    if (not serial or serial[0] & 0x80 or not any(serial)
+            or (len(serial) > 1 and serial[0] == 0 and serial[1] < 128)):
+        raise ValueError('expected a positive DER certificate serial number')
+    fields.done()
+
+
+def _direct_signature(envelope, message, signer_identifier, signer_version):
     outer = _DER(envelope)
     content_info = _DER(outer.take(0x30))
     outer.done()
@@ -105,16 +117,19 @@ def _direct_signature(envelope, message, signer_identifier):
     signed_data.done()
     signer = _DER(signers.take(0x30))
     signers.done()
-    if signer.take(0x02) != b'\x02':
-        raise ValueError('expected GB/T 35275-2026 SignerInfo version 2')
+    if signer.take(0x02) != bytes((signer_version,)):
+        raise ValueError(f'expected SignerInfo version {signer_version}')
     start = signer.position
-    signer.take(0x80 if signer.next_is(0x80) else 0x30)
+    signer.take(0x30)
     if signer.data[start:signer.position] != signer_identifier:
         raise ValueError('SignedData signer identifier differs from the configured signer')
     _algorithm(signer, _SM3)
     if signer.next_is(0xa0):
         raise ValueError('signedAttrs signatures cannot authorize the existing payment template')
-    _algorithm(signer, _SM2_SIGNATURE, _SM2_WITH_SM3)
+    if signer_version == 2:
+        _algorithm(signer, _SM2_SIGNATURE)
+    else:
+        _algorithm(signer, _SM2_SIGNATURE, _SM2_WITH_SM3)
     signature = _signature(signer.take(0x04))
     if signer.next_is(0xa1):
         signer.take(0xa1)
@@ -122,16 +137,19 @@ def _direct_signature(envelope, message, signer_identifier):
     return signature
 
 
-def signed_data_signer(signer, key, *, signer_identifier):
+def signed_data_signer(signer, key, *, signer_identifier, signer_version=2):
     """Adapt signer(message, user_id) returning SignedData to the wallet API.
 
-    Configure the identifier as the complete DER sid field from trusted signer
-    configuration. The single-signature payment profile requires a direct
-    signature for the exact caller-supplied message and template user ID.
+    Pin the complete DER IssuerAndSerialNumber from trusted signer configuration.
+    Select signer_version=1 for a legacy provider that directly signs the payment
+    message with the template SM2 user ID. Each provider accepts one version.
     """
     parse_public(key)
-    if not isinstance(signer_identifier, bytes) or not signer_identifier:
-        raise ValueError('expected a pinned DER signer identifier')
+    if type(signer_version) is not int or signer_version not in (1, 2):
+        raise ValueError('SignerInfo version must be 1 or 2')
+    if not isinstance(signer_identifier, bytes):
+        raise ValueError('expected a pinned DER IssuerAndSerialNumber')
+    _check_issuer_and_serial_number(signer_identifier)
 
     def sign(message, user_id):
         if not isinstance(message, bytes) or len(message) != 32 or user_id != USER_ID:
@@ -139,7 +157,7 @@ def signed_data_signer(signer, key, *, signer_identifier):
         envelope = signer(message, user_id)
         if not isinstance(envelope, bytes):
             raise ValueError('expected a DER SignedData response')
-        signature = _direct_signature(envelope, message, signer_identifier)
+        signature = _direct_signature(envelope, message, signer_identifier, signer_version)
         if not verify(key, message, signature, user_id):
             raise ValueError('SignedData does not authorize the approved transaction message')
         return signature
