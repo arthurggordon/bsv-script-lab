@@ -8,7 +8,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 
-from asn1crypto.core import Integer, SetOf
+from asn1crypto.core import Integer, ObjectIdentifier, SetOf
 from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
 from ecdsa.der import read_length, remove_integer, remove_sequence
 from ecdsa.util import sigdecode_der
@@ -78,20 +78,29 @@ CLAUSE_EVIDENCE = {
     'GB/T 20518-2018.5.2.4.2.2.AuthorityKeyIdentifier': ('certificate_profile',),
     'GB/T 20518-2018.5.2.4.2.3.SubjectKeyIdentifier': ('certificate_profile',),
     'GB/T 20518-2018.5.2.4.2.4.KeyUsage': ('certificate_profile',),
-    'GB/T 20518-2018.5.2.4.2.8.PolicyMappings': ('certificate_profile',),
-    'GB/T 20518-2018.5.2.4.2.9.SubjectAltName': ('certificate_profile',),
+    'GB/T 20518-2018.5.2.4.2.8.PolicyMappings': ('certificate_profile', 'certificate_constraints'),
+    'GB/T 20518-2018.5.2.4.2.9.SubjectAltName': ('certificate_profile', 'certificate_extension_shapes'),
+    'GB/T 20518-2018.5.2.4.2.10.IssuerAltName': ('certificate_extension_shapes',),
     'GB/T 20518-2018.5.2.4.2.12.BasicConstraints': ('certificate_profile',),
-    'GB/T 20518-2018.5.2.4.2.13.NameConstraints': ('certificate_profile',),
+    'GB/T 20518-2018.5.2.4.2.13.NameConstraints': ('certificate_profile', 'certificate_constraints'),
+    'GB/T 20518-2018.5.2.4.2.14.PolicyConstraints': ('certificate_constraints',),
+    'GB/T 20518-2018.5.2.4.2.15.CRLDistPointsSyntax': ('certificate_extension_shapes',),
+    'GB/T 20518-2018.5.2.4.2.17.FreshestCRL': ('certificate_extension_shapes',),
+    'GB/T 20518-2018.5.2.4.2.19-22.IdentificationNumbers': ('certificate_identification_numbers',),
+    'GB/T 20518-2018.5.2.4.3.2-3.InformationAccess': ('certificate_extension_shapes',),
     'GB/T 20518-2018.5.2.3.2.SerialNumber': ('certificate_fields',),
     'GB/T 20518-2018.5.2.3.3.Signature': ('x509_algorithms',),
     'GB/T 20518-2018.5.2.3.4.Issuer': ('certificate_fields',),
     'GB/T 20518-2018.5.3.3.2.Signature': ('x509_algorithms',),
+    'GB/T 20518-2018.5.3.3.3.CRLIssuer': ('crl_field_encoding',),
     'GB/T 20518-2018.5.3.4.1-5.CRLExtensionProfile': ('crl_profile',),
+    'GB/T 20518-2018.5.3.4.5.IssuingDistributionPoint': ('crl_field_encoding',),
     'GB/T 20518-2018.5.3.4.6-7.CRLAndEntryExtensions': ('crl_entry_profile',),
     'GB/T 20518-2018.5.2.3.5.2.ValidityTime': ('x509_time',),
     'GB/T 20518-2018.5.3.2.SM2ParametersAndSignatureValue': ('x509_parameters', 'x509_signature'),
     'GB/T 20518-2018.5.3.3.4.thisUpdate': ('x509_time',),
     'GB/T 20518-2018.5.3.3.5.nextUpdate': ('crl_next_update', 'x509_time'),
+    'GB/T 20518-2018.5.3.3.6.RevokedCertificates': ('crl_field_encoding',),
     'GB/T 20518-2018.5.3.2.ExtensionVersionDependencies': ('x509_extensions',),
     'X.690.8.3.Integer': ('unsigned_attribute',),
     'X.690.8.4.Enumerated': ('open_value_forms',),
@@ -102,7 +111,7 @@ CLAUSE_EVIDENCE = {
     'X.690.8.23.10.UTF8String': ('open_value_forms',),
     'X.690.10.2.StringEncodingForms': ('open_value_der', 'open_value_forms'),
     'X.690.11.2.1.UnusedBits': ('open_value_der',),
-    'X.690.11.5.DefaultComponents': ('x509_extensions',),
+    'X.690.11.5.DefaultComponents': ('x509_extensions', 'crl_field_encoding'),
     'X.690.11.7-11.8.TimeEncoding': ('open_value_forms',),
 }
 COMPLETED_WITNESSES = set()
@@ -125,6 +134,11 @@ def encoded_fields(content):
             raise AssertionError('truncated field in the OpenSSL fixture')
         yield content[:field_end]
         content = content[field_end:]
+
+
+def x509_extension(oid, value, *, critical=False):
+    critical_field = der(0x01, b'\xff') if critical else b''
+    return der(0x30, ObjectIdentifier(oid).dump() + critical_field + der(0x04, value))
 
 
 class SignedDataFixtures(unittest.TestCase):
@@ -1116,6 +1130,97 @@ class SignedDataReview(SignedDataFixtures):
                         validate_signed_data_format(envelope)
         COMPLETED_WITNESSES.add('certificate_profile')
 
+    def check_certificate_extensions(self, cases, *, schemas=None):
+        certificate, _ = self.issue_certificate_and_crl(version_2_crl=True)
+        body, algorithm = x509_signed_parts(certificate)
+        prefix = b''.join(tuple(encoded_fields(body))[:7])
+        for label, extensions, error in cases:
+            member = self.sign_review_metadata(prefix + der(0xa3, der(0x30, extensions)), algorithm)
+            envelope = signed_data(self.signatures['direct'], attached=MESSAGE, include_signer=False,
+                                   digest_algorithms=b'', metadata=der(0xa0, member))
+            with self.subTest(case=label):
+                if error is None:
+                    validate_signed_data_format(envelope, extension_schemas=schemas)
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        validate_signed_data_format(envelope, extension_schemas=schemas)
+
+    def test_name_and_policy_constraints_on_ca_certificates(self):
+        ca = (x509_extension('2.5.29.19', der(0x30, der(0x01, b'\xff')), critical=True)
+              + x509_extension('2.5.29.14', der(0x04, b'test key identifier'))
+              + x509_extension('2.5.29.15', der(0x03, b'\x02\x04'), critical=True))
+        dns = der(0x82, b'subject.example')
+        subtree = der(0x30, dns)
+
+        def names(*fields):
+            return x509_extension('2.5.29.30', der(0x30, b''.join(fields)))
+
+        def policies(*fields):
+            return x509_extension('2.5.29.36', der(0x30, b''.join(fields)))
+
+        mapping = x509_extension('2.5.29.33', der(0x30, der(0x30, bytes.fromhex('06032a030406032a0305'))))
+        misplaced = (('nameConstraints', names(der(0xa0, subtree))), ('policyMappings', mapping),
+                     ('policyConstraints', policies(der(0x80, b'\x00'))))
+        cases = [(name + ' on end entity', extension, name + ' requires a CA certificate')
+                 for name, extension in misplaced]
+        for tag in (0xa0, 0xa1):
+            cases.append((f'present subtree {tag:#x}', ca + names(der(tag, subtree)), None))
+            cases.append((f'empty subtree {tag:#x}', ca + names(der(tag, b'')), 'at least one subtree'))
+            for field, value in ((0x80, b'\x00'), (0x80, b'\x01'), (0x81, b'\x00'), (0x81, b'\x01')):
+                constraint = names(der(tag, der(0x30, dns + der(field, value))))
+                cases.append((f'subtree distance {tag:#x} {field:#x}={value.hex()}', ca + constraint,
+                              'minimum and maximum must be omitted'))
+        cases.append(('both name scopes', ca + names(der(0xa0, subtree), der(0xa1, subtree)), None))
+        for tag in (0x80, 0x81):
+            for value, error in ((b'\x00', None), (b'\x7f', None), (b'\x00\x80', None),
+                                 (b'\xff', 'nonnegative DER INTEGER'), (b'\x00\x7f', 'nonnegative DER INTEGER')):
+                cases.append((f'SkipCerts {tag:#x}={value.hex()}', ca + policies(der(tag, value)), error))
+        cases.append(('both policy constraints', ca + policies(der(0x80, b'\x00'), der(0x81, b'\x01')), None))
+        self.assertEqual(len(cases), 27)
+        self.check_certificate_extensions(cases)
+        COMPLETED_WITNESSES.add('certificate_constraints')
+
+    def test_certificate_name_distribution_and_access_extension_shapes(self):
+        cases = []
+        dns = der(0x82, b'issuer.example')
+        uri = der(0x86, b'https://issuer.example/x509')
+        point = der(0x30, der(0xa0, der(0xa0, uri)))
+        access = der(0x30, ObjectIdentifier('1.3.6.1.5.5.7.48.2').dump() + uri)
+        for oid, name, member, empty_error in (
+            ('2.5.29.18', 'issuerAltName', dns, 'entry'),
+            ('2.5.29.31', 'cRLDistributionPoints', point, 'entry'),
+            ('2.5.29.46', 'freshestCRL', point, 'entry'),
+            ('1.3.6.1.5.5.7.1.1', 'authorityInfoAccess', access, 'access description'),
+            ('1.3.6.1.5.5.7.1.11', 'subjectInformationAccess', access, 'access description'),
+        ):
+            cases.append((name + ' present', x509_extension(oid, der(0x30, member)), None))
+            cases.append((name + ' empty', x509_extension(oid, der(0x30, b'')),
+                          f'{name} must contain at least one {empty_error}'))
+            error = f'{name} must be noncritical' if empty_error == 'access description' else None
+            cases.append((name + ' critical', x509_extension(oid, der(0x30, member), critical=True), error))
+        for name, member in (('DNS', der(0x82, b'')), ('email', der(0x81, b'')), ('URI', der(0x86, b'')),
+                             ('directory', der(0xa4, der(0x30, b'')))):
+            san = x509_extension('2.5.29.17', der(0x30, dns + member))
+            cases.append(('SAN with an empty ' + name, san, 'subjectAltName must not contain an empty name'))
+        self.assertEqual(len(cases), 19)
+        self.check_certificate_extensions(cases)
+        COMPLETED_WITNESSES.add('certificate_extension_shapes')
+
+    def test_national_certificate_identification_number_types(self):
+        cases = []
+        for number in range(2, 6):
+            oid = f'1.2.156.10260.4.1.{number}'
+            for case, value, critical, error in (
+                ('PrintableString', der(0x13, b'Fixture-123'), False, None),
+                ('critical', der(0x13, b'Fixture-123'), True, 'identification number extensions must be noncritical'),
+                ('wrong string type', der(0x0c, b'Fixture-123'), False, 'identification number extensions require PrintableString'),
+                ('invalid character', der(0x13, b'Fixture_123'), False, 'invalid DER PrintableString'),
+            ):
+                cases.append((f'{oid} {case}', x509_extension(oid, value, critical=critical), error))
+        self.assertEqual(len(cases), 16)
+        self.check_certificate_extensions(cases, schemas={})
+        COMPLETED_WITNESSES.add('certificate_identification_numbers')
+
     def test_chapter_8_crl_profile_constraints(self):
         _, crl = self.issue_certificate_and_crl(version_2_crl=True)
         body, algorithm = x509_signed_parts(crl)
@@ -1157,6 +1262,43 @@ class SignedDataReview(SignedDataFixtures):
                     with self.assertRaisesRegex(ValueError, error):
                         validate_signed_data_format(envelope)
         COMPLETED_WITNESSES.add('crl_profile')
+
+    def test_crl_issuer_revoked_sequence_and_implicit_flags(self):
+        _, crl = self.issue_certificate_and_crl(version_2_crl=True)
+        body, algorithm = x509_signed_parts(crl)
+        version, signature, issuer, current, next_update, *_ = encoded_fields(body)
+        prefix = version + signature + issuer + current + next_update
+        number = x509_extension('2.5.29.20', der(0x02, b'\x01'))
+
+        def revoked(date):
+            return der(0x30, der(0x30, der(0x02, b'\x01') + date))
+
+        cases = [
+            ('empty revoked list omitted', prefix, b'', None),
+            ('empty revoked list present', prefix + der(0x30, b''), b'', 'revokedCertificates must be omitted'),
+            ('revocation has DER UTC time', prefix + revoked(der(0x17, b'251231000000Z')), b'', None),
+            ('revocation has offset', prefix + revoked(der(0x17, b'251231000000+0000')), b'', 'expected UTC with seconds'),
+            ('revocation has no seconds', prefix + revoked(der(0x17, b'2512310000Z')), b'', 'expected UTC with seconds'),
+            ('issuer has empty RDN', version + signature + der(0x30, der(0x31, b'')) + current + next_update,
+             b'', 'empty DER issuer RDN'),
+        ]
+        for tag in (0x81, 0x82, 0x84, 0x85):
+            for value, error in ((b'\xff', None), (b'\x00', 'BOOLEAN flags must be TRUE or omitted'),
+                                 (b'\x01', 'BOOLEAN flags must be TRUE or omitted')):
+                distribution = x509_extension('2.5.29.28', der(0x30, der(tag, value)), critical=True)
+                cases.append((f'issuing distribution flag {tag:#x}={value.hex()}', prefix, distribution, error))
+        self.assertEqual(len(cases), 18)
+        for label, fields, extension, error in cases:
+            member = self.sign_review_metadata(fields + der(0xa0, der(0x30, number + extension)), algorithm)
+            envelope = signed_data(self.signatures['direct'], attached=MESSAGE, include_signer=False,
+                                   digest_algorithms=b'', metadata=der(0xa1, member))
+            with self.subTest(case=label):
+                if error is None:
+                    validate_signed_data_format(envelope)
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        validate_signed_data_format(envelope)
+        COMPLETED_WITNESSES.add('crl_field_encoding')
 
     def test_chapter_8_freshest_crl_and_revoked_entry_constraints(self):
         _, crl = self.issue_certificate_and_crl(version_2_crl=True)

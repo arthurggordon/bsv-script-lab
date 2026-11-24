@@ -17,8 +17,15 @@ _SM2_SIGNATURE = bytes.fromhex('2a811ccf5501822d01')
 _SM2_WITH_SM3 = bytes.fromhex('2a811ccf55018375')
 _MESSAGE_DIGEST = bytes.fromhex('2a864886f70d010904')
 _BASIC_CONSTRAINTS = bytes.fromhex('551d13')
+_NAME_CONSTRAINTS = bytes.fromhex('551d1e')
 _POLICY_MAPPINGS = bytes.fromhex('551d21')
+_POLICY_CONSTRAINTS = bytes.fromhex('551d24')
+_ISSUING_DISTRIBUTION_POINT = bytes.fromhex('551d1c')
 _ANY_POLICY = bytes.fromhex('551d2000')
+_IDENTIFICATION_NUMBERS = {ObjectIdentifier(f'1.2.156.10260.4.1.{number}').contents: f'1.2.156.10260.4.1.{number}'
+                           for number in range(2, 6)}
+_CERTIFICATE_EXTENSION_TYPES = frozenset((ExtensionOID.POLICY_MAPPINGS.dotted_string,
+                                          *_IDENTIFICATION_NUMBERS.values()))
 _NUMERIC_STRING = b' 0123456789'
 _PRINTABLE_STRING = (b" '()+,-./:=?0123456789"
                      b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz')
@@ -317,12 +324,12 @@ def _check_x509_time(fields):
         raise ValueError('X.509 dates before 2050 must use UTCTime')
 
 
-def _check_certificate_extension_value(oid, encoded):
+def _check_certificate_extension_value(oid, critical, encoded):
     if oid == _BASIC_CONSTRAINTS:
         constraints = _DER(_DER(encoded).take(0x30))
         if constraints.next_is(0x01) and constraints.take(0x01) == b'\x00':
             raise ValueError('basicConstraints cA FALSE must be omitted in DER')
-    if oid == _POLICY_MAPPINGS:
+    elif oid == _POLICY_MAPPINGS:
         mappings = _DER(_DER(encoded).take(0x30))
         if not mappings.data:
             raise ValueError('policyMappings must contain at least one mapping')
@@ -334,9 +341,56 @@ def _check_certificate_extension_value(oid, encoded):
                 if policy == _ANY_POLICY:
                     raise ValueError('policyMappings must not contain anyPolicy')
             mapping.done()
+    elif oid == _NAME_CONSTRAINTS:
+        constraints = _DER(_DER(encoded).take(0x30))
+        for tag in (0xa0, 0xa1):
+            if not constraints.next_is(tag):
+                continue
+            subtrees = _DER(constraints.take(tag))
+            if not subtrees.data:
+                raise ValueError('nameConstraints must contain at least one subtree in each present field')
+            while subtrees.position < len(subtrees.data):
+                subtree = _DER(subtrees.take(0x30))
+                subtree.take()  # GeneralName base, parsed by the X.509 decoder.
+                if subtree.next_is(0x80) or subtree.next_is(0x81):
+                    raise ValueError('nameConstraints minimum and maximum must be omitted')
+                subtree.done()
+        constraints.done()
+    elif oid == _POLICY_CONSTRAINTS:
+        constraints = _DER(_DER(encoded).take(0x30))
+        for tag in (0x80, 0x81):
+            if constraints.next_is(tag):
+                value = constraints.take(tag)
+                if not _minimal_integer(value) or value[0] & 0x80:
+                    raise ValueError('policyConstraints SkipCerts must be a nonnegative DER INTEGER')
+        constraints.done()
+    elif oid in _IDENTIFICATION_NUMBERS:
+        if critical:
+            raise ValueError('GB/T 20518 identification number extensions must be noncritical')
+        value = _DER(encoded)
+        if not value.next_is(0x13):
+            raise ValueError('GB/T 20518 identification number extensions require PrintableString')
+        value.take(0x13)
+        value.done()
 
 
-def _check_extensions(encoded, *, certificate_profile=False, schemas=None):
+def _check_crl_extension_value(oid, _critical, encoded):
+    if oid == _ISSUING_DISTRIBUTION_POINT:
+        fields = _DER(_DER(encoded).take(0x30))
+        if fields.next_is(0xa0):
+            fields.take(0xa0)
+        for tag in (0x81, 0x82, 0x83, 0x84, 0x85):
+            if not fields.next_is(tag):
+                continue
+            value = fields.take(tag)
+            if tag == 0x83:
+                _check_bit_string(value)
+            elif value != b'\xff':
+                raise ValueError('issuingDistributionPoint BOOLEAN flags must be TRUE or omitted in DER')
+        fields.done()
+
+
+def _check_extensions(encoded, *, check_value=None, schemas=None):
     outer = _DER(encoded)
     extensions = _DER(outer.take(0x30))
     outer.done()
@@ -348,15 +402,16 @@ def _check_extensions(encoded, *, certificate_profile=False, schemas=None):
         if oid in seen:
             raise ValueError('duplicate X.509 extension OID')
         seen.add(oid)
-        if entry.next_is(0x01) and entry.take(0x01) != b'\xff':
+        critical = entry.next_is(0x01)
+        if critical and entry.take(0x01) != b'\xff':
             raise ValueError('X.509 extension critical must be TRUE or omitted')
         value = _DER(entry.take(0x04))
         encoded_value = value.take_encoded()
         _check_open_value(encoded_value)
         value.done()
         entry.done()
-        if certificate_profile:
-            _check_certificate_extension_value(oid, encoded_value)
+        if check_value is not None:
+            check_value(oid, critical, encoded_value)
         if schemas is not None:
             identifier = ObjectIdentifier(contents=oid).dotted
             if identifier in schemas:
@@ -369,9 +424,9 @@ def _require_extension_schemas(extensions, schemas, *, locally_decoded=()):
     if schemas is None:
         return
     for extension in extensions:
-        if isinstance(extension.value, UnrecognizedExtension) and extension.oid not in locally_decoded:
+        if isinstance(extension.value, UnrecognizedExtension):
             identifier = extension.oid.dotted_string
-            if identifier not in schemas:
+            if identifier not in schemas and identifier not in locally_decoded:
                 raise MissingExtensionSchema(f'missing ASN.1 schema for X.509 extension {identifier}')
 
 
@@ -386,8 +441,25 @@ def _check_certificate_profile(extensions, *, subject_present):
     names = fields.get(ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
     if names is not None and not len(names.value):
         raise ValueError('subjectAltName must contain at least one name')
+    if names is not None and any(not name.value for name in names.value):
+        raise ValueError('subjectAltName must not contain an empty name')
     if not subject_present and (names is None or not names.critical):
         raise ValueError('empty certificate subject requires critical subjectAltName')
+
+    for oid, name in ((ExtensionOID.ISSUER_ALTERNATIVE_NAME, 'issuerAltName'),
+                      (ExtensionOID.CRL_DISTRIBUTION_POINTS, 'cRLDistributionPoints'),
+                      (ExtensionOID.FRESHEST_CRL, 'freshestCRL')):
+        extension = fields.get(oid)
+        if extension is not None and not len(extension.value):
+            raise ValueError(f'{name} must contain at least one entry')
+    for oid, name in ((ExtensionOID.AUTHORITY_INFORMATION_ACCESS, 'authorityInfoAccess'),
+                      (ExtensionOID.SUBJECT_INFORMATION_ACCESS, 'subjectInformationAccess')):
+        extension = fields.get(oid)
+        if extension is not None:
+            if extension.critical:
+                raise ValueError(f'{name} must be noncritical')
+            if not len(extension.value):
+                raise ValueError(f'{name} must contain at least one access description')
 
     basic = fields.get(ExtensionOID.BASIC_CONSTRAINTS)
     usage = fields.get(ExtensionOID.KEY_USAGE)
@@ -404,8 +476,12 @@ def _check_certificate_profile(extensions, *, subject_present):
             raise ValueError('CA certificate requires keyCertSign in keyUsage')
     elif can_sign_certificates:
         raise ValueError('keyCertSign requires basicConstraints cA TRUE')
-    if ExtensionOID.NAME_CONSTRAINTS in fields and not is_ca:
-        raise ValueError('nameConstraints requires a CA certificate')
+    if not is_ca:
+        for oid, name in ((ExtensionOID.NAME_CONSTRAINTS, 'nameConstraints'),
+                          (ExtensionOID.POLICY_MAPPINGS, 'policyMappings'),
+                          (ExtensionOID.POLICY_CONSTRAINTS, 'policyConstraints')):
+            if oid in fields:
+                raise ValueError(f'{name} requires a CA certificate')
 
 
 def _check_certificate(encoded, *, profile=False, schemas=None):
@@ -440,7 +516,8 @@ def _check_certificate(encoded, *, profile=False, schemas=None):
     if tbs.next_is(0xa3):
         if version != b'\x02':
             raise ValueError('certificate extensions require v3')
-        _check_extensions(tbs.take(0xa3), certificate_profile=profile, schemas=schemas)
+        _check_extensions(tbs.take(0xa3), check_value=_check_certificate_extension_value if profile else None,
+                          schemas=schemas)
     tbs.done()
     if version == b'\x01':
         # GB/T 20518 permits v2, which cryptography's certificate loader rejects.
@@ -459,7 +536,8 @@ def _check_certificate(encoded, *, profile=False, schemas=None):
         raise ValueError(f'invalid X.509 certificate extension: {error}') from error
     if profile:
         _check_certificate_profile(extensions, subject_present=bool(subject))
-    _require_extension_schemas(extensions, schemas, locally_decoded=(ExtensionOID.POLICY_MAPPINGS,))
+    locally_decoded = _CERTIFICATE_EXTENSION_TYPES if profile else ()
+    _require_extension_schemas(extensions, schemas, locally_decoded=locally_decoded)
 
 
 def _check_crl_profile(extensions):
@@ -524,17 +602,24 @@ def _check_crl(encoded, *, profile=False, schemas=None):
     if version_2 and tbs.take(0x02) != b'\x01':
         raise ValueError('expected CRL v2 or omitted v1 version')
     _check_x509_signature(tbs, fields)
-    tbs.take(0x30)  # Issuer.
+    issuer = tbs.take(0x30)
+    if profile:
+        _check_issuer_name(issuer)
     _check_x509_time(tbs)  # thisUpdate.
     if not tbs.next_is(0x17) and not tbs.next_is(0x18):
         raise ValueError('missing CRL nextUpdate')
     _check_x509_time(tbs)  # nextUpdate.
     if tbs.next_is(0x30):
         revoked = _DER(tbs.take(0x30))
+        if profile and not revoked.data:
+            raise ValueError('empty CRL revokedCertificates must be omitted')
         while revoked.position < len(revoked.data):
             entry = _DER(revoked.take(0x30))
             entry.take(0x02)  # userCertificate.
-            entry.take(0x17 if entry.next_is(0x17) else 0x18)  # revocationDate.
+            date_tag = 0x17 if entry.next_is(0x17) else 0x18
+            date = entry.take(date_tag)
+            if profile:
+                _check_der_time(date_tag, date)
             if entry.next_is(0x30):
                 if not version_2:
                     raise ValueError('revoked certificate extensions require CRL v2')
@@ -543,7 +628,8 @@ def _check_crl(encoded, *, profile=False, schemas=None):
     if tbs.next_is(0xa0):
         if not version_2:
             raise ValueError('CRL extensions require v2')
-        _check_extensions(tbs.take(0xa0), schemas=schemas)
+        _check_extensions(tbs.take(0xa0), check_value=_check_crl_extension_value if profile else None,
+                          schemas=schemas)
     tbs.done()
     crl = load_der_x509_crl(encoded)
     if not crl.issuer.rdns:

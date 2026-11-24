@@ -199,6 +199,21 @@ The independent OpenSSL replay now runs 103 checks using a separate DER
 constructor. Added cases include a private extension schema, removeFromCRL,
 and crossed `signedAttrs` preimages.
 
+The following witnesses add 80 OpenSSL-signed certificate or CRL cases.
+Each object is signed and verified independently before it is embedded in a
+zero-signer envelope for `validate_signed_data_format`. The zero-signer
+envelope isolates metadata validation from content signature verification.
+
+| Normative area | Cases | Executable evidence |
+| --- | ---: | --- |
+| GB/T 20518-2018 §§5.2.4.2.8, 5.2.4.2.13–14 | 27 | CA-only placement for policy mappings and name and policy constraints. Both subtree fields check nonempty sequences and omission of minimum and maximum. Both policy counters check zero, the DER sign-octet boundary, negative and nonminimal encodings. |
+| GB/T 20518-2018 §§5.2.4.2.9–10, 5.2.4.2.15, 5.2.4.2.17 and 5.2.4.3.2–3 | 19 | Empty SAN entries are rejected even alongside a valid DNS name. Issuer alternative names, certificate distribution points, certificate freshestCRL and both information-access extensions have a nonempty list. Information-access extensions are noncritical. The other tested extensions permit both criticality settings. |
+| GB/T 20518-2018 §§5.2.4.2.19–22 | 16 | The four defined OIDs each accept a noncritical PrintableString without a caller-supplied schema. Criticality, a different string type and an out-of-repertoire character each cause a distinct rejection. |
+| GB/T 20518-2018 §§5.3.3.3, 5.3.3.6 and 5.3.4.5 with ITU-T X.690 §11.5 | 18 | CRL issuer RDN structure, omission of an empty revokedCertificates list, DER revocation time, and each implicit DEFAULT FALSE flag in issuingDistributionPoint. The flag fixtures independently exercise canonical TRUE, explicit FALSE and a noncanonical TRUE octet. |
+
+[GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
+[ITU-T X.690](https://www.itu.int/rec/T-REC-X.690/en)
+
 The national standard catalog and the published texts were rechecked for
 the two signature-encoding questions. The GB/T 33560 identifier assignments
 and the explicit NULLs in the Appendix A.1 envelope provide OID and
