@@ -49,6 +49,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r projects/lamport-ots/reference/requirements.txt
 python -m unittest discover -s projects/lamport-ots/reference -p test_lamport.py -v
+python -m unittest discover -s projects/lamport-ots/reference -p test_acceptance.py -v
 python projects/lamport-ots/reference/measure.py --benchmark
 # macOS, Apple Container (no Docker daemon):
 bash projects/lamport-ots/reference/verify_apple.sh
@@ -56,6 +57,6 @@ bash projects/lamport-ots/reference/verify_apple.sh
 bash projects/lamport-ots/reference/verify.sh
 ```
 
-[Validation receipt](docs/validation.md) · [Protocol and layout](docs/spec.md) · [Reference usage](reference/README.md) ·
+[Acceptance domain and coverage proof](docs/acceptance.md) · [Validation receipt](docs/validation.md) · [Protocol and layout](docs/spec.md) · [Reference usage](reference/README.md) ·
 [Original ALL vector](template/vector.json) ·
 [Universal sighash vectors](template/universal-vectors.json)

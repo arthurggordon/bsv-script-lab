@@ -25,7 +25,7 @@ export REGTEST_URL="http://127.0.0.1:$port"
 for attempt in {1..60}; do
   if [[ -s "$REGTEST_COOKIE" ]] && container exec "$name" bitcoin-cli -regtest -rpcport=18443 -datadir=/data getblockcount >/dev/null 2>&1; then
     container exec "$name" bitcoind --version | head -1
-    python -m unittest -v test_node "$@"
+    python -m unittest -v test_node test_acceptance "$@"
     exit 0
   fi
   sleep 1
