@@ -135,7 +135,8 @@ algorithm identifiers under GB/T 20518-2018. [GB/T 20518-2018](https://openstd.s
 
 ## Regression checks from the review of `4bcc9d5`
 
-`SignedDataReview` runs 60 conforming controls and 72 rejection cases.
+`SignedDataReview` runs 108 conforming controls and 120 rejection cases
+for the encoding matrix below.
 Each rejection test requires every case to raise `ValueError` and reports
 any case that returns the valid payment signature or content. Fixture setup
 checks the OpenSSL signatures and runs every case before these assertions.
@@ -147,14 +148,32 @@ sample to pass.
 | GB/T 20518-2018 §§5.2.2 and 5.3.2 | Four checks for explicit NULL in both SM2 signature algorithm identifiers of a certificate or CRL. Both verification entry points also accept controls with omitted parameters. |
 | GB/T 20518-2018 §§5.2.2 and 5.3.2 and GB/T 35276 §7.3 | Twelve checks reject an incorrect signature tag, a zero scalar or a non-octet-aligned BIT STRING in the embedded signature value of an SM2 certificate or CRL. |
 | GB/T 20518-2018 §§5.2.3.5.2 and 5.3.3.4–5.3.3.5 | Eight checks replace one 2049 time at a time with GeneralizedTime, covering certificate `notBefore` and `notAfter` and CRL `thisUpdate` and `nextUpdate`. Controls encode both fields as UTCTime in 2049 and GeneralizedTime in 2050. |
-| X.690 §§8.4, 8.9–8.12, 8.23.10 and 10.2 | Forty-eight checks cover primitive SEQUENCE and SET, constructed UTF8String and PrintableString, overlong UTF-8, and empty, nonminimal or constructed ENUMERATED. Each case runs as a direct and nested value through payment `unsignedAttrs` and general `unsignedAttrs` and `signedAttrs`. |
+| X.690 §§8.4, 8.9–8.12, 8.20, 8.23, 10.2 and 11.7–11.8 | Ninety-six checks cover primitive SEQUENCE and SET, constructed strings, UTF-8 and character repertoires, RELATIVE-OID, ENUMERATED and DER time forms. Each case runs as a direct and nested value through payment `unsignedAttrs` and general `unsignedAttrs` and `signedAttrs`. |
 
-The completed fixture reproduced incorrect acceptance of all 72 negative
-cases on `3197dd9`, while its 60 controls passed. A separate OpenSSL replay
+The earlier 72-case rejection fixture reproduced incorrect acceptance of
+all its negative cases on `3197dd9`, while its 60 controls passed. A separate OpenSSL replay
 constructed 57 checks without the fixture helpers, including a mixed
 2049/2050 validity interval, detached content, an RSA certificate with NULL
 parameters, and independently signed attribute sets. The repaired
 implementation matched every expected outcome.
+
+## Additional Chapter 8 evidence
+
+| Normative area | Evidence | Remaining scope |
+| --- | --- | --- |
+| GB/T 20518-2018 §§5.2.2, 5.2.4.1 and 5.3.2 | Both verification entry points exercise certificate v1, v2 and v3, CRL v1 and v2, and version restrictions for unique identifiers and extensions. Certificate, CRL and revoked-entry extensions are checked for unique OIDs, DER DEFAULT omission, exactly one wrapped DER value and the supported extension payload type. | Extension-specific constraints, such as criticality requirements and relationships between extensions, require individual clause witnesses. |
+| GB/T 35275-2026 §6.9 and §8 | Schema-aware verification checks a declared open type in both attribute fields. An independent signature remains valid when an inner SET OF is unsorted or the value has the wrong type. The ASN.1 schema check rejects both cases and identifies missing schemas explicitly. | Private attribute OIDs require their declaring ASN.1 schemas. The generic verifier alone leaves implicit tags and other schema-dependent constraints unresolved. |
+| GB/T 35275-2026 §8 signer-set grammar | Signer verification exercises one and multiple signers with mixed direct and attribute signing. Zero signers fail signature verification. | The empty `SignerInfos` set is an ASN.1 framing case to cover in format-only conformance. |
+| GB/T 35275-2026 §§6.3–6.4 and §8 signed input | SM3 and SM2-1 interoperability is exercised with OpenSSL and the independent Go signer. CMS-style DER SET signing is covered for signed attributes. | The cited algorithm identifiers and Appendix A.1 give interoperability evidence. Envelope parameter syntax and the signed-attribute tagging convention still need a normative disposition for full conformance. |
+
+The v2 certificate structural test uses `asn1crypto` because
+`cryptography` rejects certificate version v2 at load time. The
+validation runs on the original certificate bytes. Certificate path
+validation, trust anchors, and revocation decisions belong to the caller.
+An independent OpenSSL replay exercised 74 checks with its own DER
+construction, including a v2 certificate with a unique identifier, valid
+and duplicate private extensions, CRL version dependencies, and open
+values with DER time and RELATIVE-OID encodings.
 
 ## Appendix A.1 audit
 

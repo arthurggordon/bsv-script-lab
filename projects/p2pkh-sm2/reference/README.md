@@ -66,7 +66,8 @@ envelope includes content, its bytes must match the payment message. The
 adapter checks the DER structure of embedded certificates, revocation lists
 and unsigned attributes. It checks for a nonempty certificate issuer, a
 positive certificate serial number encoded in at most 20 octets and a CRL
-with a nextUpdate. The configured public key determines payment
+with a nextUpdate. Embedded metadata also has version and extension
+structure checks. The configured public key determines payment
 authorization. An application that uses PKI establishes certificate trust
 separately.
 
@@ -106,3 +107,11 @@ both direct signatures over the content octets and signatures over a DER
 `SignedAttributes` SET. For a signer with attributes, it also checks that the
 sole `messageDigest` value matches SM3 of the content octets. The caller
 establishes signer trust and any certificate path or revocation policy.
+
+For schema-aware `AttributeValue` validation, pass `attribute_schemas`, a
+mapping from dotted attribute OIDs to `asn1crypto` ASN.1 classes. Each
+declared value is decoded as its ASN.1 type and checked against the canonical
+DER re-encoding. `messageDigest` has a built-in OCTET STRING check.
+`MissingAttributeSchema` identifies an encountered OID whose schema is
+unavailable. The configured schema defines the type and any application
+constraints. [Acceptance evidence and remaining scope](signed-data-acceptance.md#additional-chapter-8-evidence)
