@@ -139,6 +139,17 @@ combining with a delta CRL. The caller authenticates both lists against
 the same authorized signing key before relying on the pair check. Pass
 objects from the envelope or from another authenticated source.
 
+Use `merge_crl_revocations(complete_crl, delta_crl, published_crl=...)`
+to build a snapshot for the delta CRL's number, validity times and
+scope. Supply `published_crl` to compare with a complete CRL released at
+the same `thisUpdate` and number. The snapshot's
+`revocation_for(issuer_name, serial_number)` takes a `cryptography.x509.Name`
+and returns the scoped revocation entry or `None` if absent. For an
+indirect entry with multiple distinct directory names, an
+`issuer_resolver(serial_number, candidates)` can select the authenticated
+issuer name from the supplied candidates. Signature authentication,
+certificate paths, applicability and time selection remain caller inputs.
+
 The general signature verifier takes `signed_attrs_encoding='cms-set'`
 for the CMS universal SET signing input. Select `'context-field'` to
 verify the original `[0]` field bytes. Each verification uses the selected

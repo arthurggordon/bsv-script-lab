@@ -192,7 +192,7 @@ decisions require trusted inputs at the application layer.
 | GB/T 20518-2018 §5.2.4.1 | A declared private ASN.1 type is checked for certificates, CRLs and revoked entries. Tests exercise valid types, invalid type and SET OF order, and a distinct missing-schema error. |
 
 Remaining X.509 scope includes other extension-specific rules, issuer
-and subject relationships, and revocation-state validation. The
+and subject relationships, and certificate-level revocation decisions. The
 certificate fixture uses independently signed metadata to isolate each
 rejection from the signature bytes.
 The independent OpenSSL replay now runs 103 checks using a separate DER
@@ -230,12 +230,37 @@ series and establishes issuer identity before comparing its metadata.
 | RFC 5280 §§7.1, 7.3 | The pair fixture exercises UTF8String and PrintableString comparison, insignificant space and case folding, domain-component case, and differing RDN attribute multiplicity. The distribution point scope is compared by its canonical DER value. |
 
 The fixtures use OpenSSL to sign and verify both CRLs before invoking the
-metadata verifier. Validation of the signing key and path, publication of
-the referenced complete CRL, and equality of the resulting revocation
-state are separate evidence requirements.
+metadata verifier. Validation of the signing key and path and publication
+of the referenced complete CRL require separate evidence.
 [GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
 [RFC 5280 §5.2.4](https://www.rfc-editor.org/rfc/rfc5280#section-5.2.4) ·
 [RFC 5280 §7.1](https://www.rfc-editor.org/rfc/rfc5280#section-7.1)
+
+### Revocation snapshot and same-time publication
+
+`merge_crl_revocations` checks the pair and compares authority key
+identifiers. It indexes each CRL by certificate issuer and serial, applies
+delta entries over the complete list, and removes entries marked
+`removeFromCRL`. The snapshot uses the delta CRL's number, times and scope.
+For an indirect CRL, the first entry defaults to the CRL issuer and later
+entries inherit the previous issuer unless a critical `certificateIssuer`
+selects a new one. An application supplies an authenticated selection when
+that extension contains multiple distinct directory names. Duplicate
+issuer/serial entries and unsupported critical extensions fail the merge.
+
+| Normative area | Executable evidence |
+| --- | --- |
+| RFC 5280 §§5.2.4 and 6.3.3(i)–(k) | A 20-row matrix crosses four complete-list states with five delta actions. It checks additions, replacements, retention, releases including an absent target, explicit or default unspecified reason, UTC dates and metadata inherited from the delta. |
+| RFC 5280 §§5.3.3 and 6.3.3(c) | Direct and indirect entry witnesses check per-list issuer inheritance, issuer changes, equal serials at different issuers, criticality and missing or ambiguous DNs. Authority key identifiers agree or both are absent. A different or one-sided identifier fails the merge. |
+| GB/T 20518-2018 §5.3.4.3 and RFC 5280 §5.2.3 | The optional same-time complete CRL must match the merged issuer/serial state, including reason and dates. Tests exercise an order-independent match and isolate a missing entry, extra entry, differing reason or dates, wrong number, time, issuer, scope and delta in the complete slot. |
+| Independent OpenSSL check | Six test certificates produce 18 CLI verdicts using the complete CRL alone, the pair with `-extended_crl -use_deltas`, and the simultaneous complete CRL. The pair and simultaneous complete verdicts match the snapshot, and the base-only controls distinguish absent and released entries. |
+
+The snapshot applies to one authenticated scope and time. Full certificate
+revocation assessment still requires signature and path authentication, a
+validation time and coverage of the certificate's applicable distribution
+points and revocation reasons.
+[RFC 5280 §5.3.3](https://www.rfc-editor.org/rfc/rfc5280#section-5.3.3) ·
+[RFC 5280 §6.3.3](https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3)
 
 The national standard catalog and the published texts were rechecked for
 the two signature-encoding questions. The GB/T 33560 identifier assignments

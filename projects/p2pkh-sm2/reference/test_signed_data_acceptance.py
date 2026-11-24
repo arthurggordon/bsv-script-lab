@@ -1,5 +1,6 @@
 """Finite acceptance model and clause witnesses for SM2 payment SignedData."""
 
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from itertools import product
 from math import prod
@@ -9,10 +10,15 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from asn1crypto.core import Integer, ObjectIdentifier, SetOf
-from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509 import Name, NameAttribute, ReasonFlags, load_der_x509_certificate, load_der_x509_crl
+from cryptography.x509.oid import NameOID
 from ecdsa.der import read_length, remove_integer, remove_sequence
 from ecdsa.util import sigdecode_der
-from signed_data import MissingAttributeSchema, MissingExtensionSchema
+from signed_data import AmbiguousCertificateIssuer, MissingAttributeSchema, MissingExtensionSchema
+from signed_data import merge_crl_revocations
 from signed_data import signed_data_signer, validate_crl_pair, validate_crl_series
 from signed_data import validate_signed_data_format, verify_signed_data
 from sm2 import N
@@ -95,7 +101,7 @@ CLAUSE_EVIDENCE = {
     'GB/T 20518-2018.5.3.3.2.Signature': ('x509_algorithms',),
     'GB/T 20518-2018.5.3.3.3.CRLIssuer': ('crl_field_encoding',),
     'GB/T 20518-2018.5.3.4.1-5.CRLExtensionProfile': ('crl_profile',),
-    'GB/T 20518-2018.5.3.4.3.CRLNumberSequence': ('crl_series', 'crl_pair'),
+    'GB/T 20518-2018.5.3.4.3.CRLNumberSequence': ('crl_series', 'crl_pair', 'crl_published_state'),
     'GB/T 20518-2018.5.3.4.4.DeltaBaseNumber': ('crl_profile', 'crl_pair'),
     'GB/T 20518-2018.5.3.4.5.IssuingDistributionPoint': ('crl_field_encoding',),
     'GB/T 20518-2018.5.3.4.6-7.CRLAndEntryExtensions': ('crl_entry_profile',),
@@ -107,6 +113,10 @@ CLAUSE_EVIDENCE = {
     'GB/T 20518-2018.5.3.2.ExtensionVersionDependencies': ('x509_extensions',),
     'RFC 5280.5.2.3.CRLNumbers': ('crl_profile', 'crl_series'),
     'RFC 5280.5.2.4.DeltaCombinationMetadata': ('crl_pair',),
+    'RFC 5280.5.2.4.LocalCRLMetadata': ('crl_revocation_merge',),
+    'RFC 5280.5.3.3.IndirectCRLEntryIssuer': ('crl_indirect_issuer', 'crl_merge_rejections'),
+    'RFC 5280.6.3.3.c.AuthorityKeyIdentifier': ('crl_merge_rejections',),
+    'RFC 5280.6.3.3.i-k.RevocationState': ('crl_revocation_merge', 'crl_indirect_issuer', 'crl_openssl_state'),
     'RFC 5280.7.1-7.3.CRLIssuerNameMatching': ('crl_pair',),
     'X.690.8.3.Integer': ('unsigned_attribute',),
     'X.690.8.4.Enumerated': ('open_value_forms',),
@@ -145,6 +155,23 @@ def encoded_fields(content):
 def x509_extension(oid, value, *, critical=False):
     critical_field = der(0x01, b'\xff') if critical else b''
     return der(0x30, ObjectIdentifier(oid).dump() + critical_field + der(0x04, value))
+
+
+def common_name_rdn(value):
+    return der(0x31, der(0x30, ObjectIdentifier('2.5.4.3').dump() + der(0x0c, value)))
+
+
+def review_revoked_entry(serial, date, *, reason=None, invalidity=None, issuers=(),
+                         critical_issuer=True, extra_extensions=b''):
+    extensions = extra_extensions
+    if reason is not None:
+        extensions += x509_extension('2.5.29.21', der(0x0a, bytes((reason,))))
+    if invalidity is not None:
+        extensions += x509_extension('2.5.29.24', der(0x18, invalidity))
+    if issuers:
+        extensions += x509_extension('2.5.29.29', der(0x30, b''.join(issuers)), critical=critical_issuer)
+    entry = Integer(serial).dump() + der(0x17, date)
+    return der(0x30, entry + (der(0x30, extensions) if extensions else b''))
 
 
 class SignedDataFixtures(unittest.TestCase):
@@ -1280,7 +1307,8 @@ class SignedDataReview(SignedDataFixtures):
         version, signature, _, _, next_update, *_ = encoded_fields(body)
 
         def issue(time, number, *, base=None, common_name=b'Review issuer', name_tag=0x0c,
-                  scope=None, domain=None, repeated_name=None):
+                  scope=None, domain=None, repeated_name=None, entries=(), authority_key=None,
+                  extra_extensions=b'', expiry=None):
             def rdn_attribute(oid, tag, value):
                 return der(0x30, ObjectIdentifier(oid).dump() + der(tag, value))
 
@@ -1295,7 +1323,13 @@ class SignedDataReview(SignedDataFixtures):
                 revision += x509_extension('2.5.29.27', Integer(base).dump(), critical=True)
             if scope is not None:
                 revision += x509_extension('2.5.29.28', der(0x30, der(scope, b'\xff')), critical=True)
-            fields = version + signature + der(0x30, issuer) + der(0x17, time) + next_update
+            if authority_key is not None:
+                revision += x509_extension('2.5.29.35', der(0x30, der(0x80, authority_key)))
+            revision += extra_extensions
+            expires = next_update if expiry is None else der(0x17, expiry)
+            fields = version + signature + der(0x30, issuer) + der(0x17, time) + expires
+            if entries:
+                fields += der(0x30, b''.join(entries))
             if revision:
                 fields += der(0xa0, der(0x30, revision))
             return self.sign_review_metadata(fields, algorithm)
@@ -1385,6 +1419,242 @@ class SignedDataReview(SignedDataFixtures):
                 with self.assertRaisesRegex(ValueError, error):
                     validate_crl_pair(candidate, update)
         COMPLETED_WITNESSES.add('crl_pair')
+
+    def test_crl_revocation_merge_exhausts_the_declared_state_domain(self):
+        issue = self.crl_revision_factory()
+        issuer = Name([NameAttribute(NameOID.COMMON_NAME, 'Review issuer')])
+        early = b'250101000000Z'
+        late = b'250102000000Z'
+        expiry = b'250202000000Z'
+        invalidity = b'20241230000000Z'
+        base_reasons = {'absent': None, 'unspecified': None, 'hold': 6, 'key compromise': 1}
+        delta_reasons = {**base_reasons, 'remove': 8}
+        expected_reasons = {'unspecified': ReasonFlags.unspecified, 'hold': ReasonFlags.certificate_hold,
+                            'key compromise': ReasonFlags.key_compromise}
+        cases = tuple(product(base_reasons, delta_reasons))
+        self.assertEqual(len(cases), 20)
+
+        def entries(status, reason, date, *, invalidity_date=None):
+            if status == 'absent':
+                return ()
+            return (review_revoked_entry(1, date, reason=reason, invalidity=invalidity_date),)
+
+        for base_status, delta_status in cases:
+            complete = issue(early, 1, expiry=b'250201000000Z', entries=entries(base_status, base_reasons[base_status], early))
+            updated = entries(delta_status, delta_reasons[delta_status], late, invalidity_date=invalidity)
+            delta = issue(late, 2, base=1, expiry=expiry, entries=updated)
+            with self.subTest(base=base_status, delta=delta_status):
+                snapshot = merge_crl_revocations(complete, delta)
+                self.assertEqual(snapshot.number, 2)
+                self.assertEqual(snapshot.this_update, datetime(2025, 1, 2, tzinfo=timezone.utc))
+                self.assertEqual(snapshot.next_update, datetime(2025, 2, 2, tzinfo=timezone.utc))
+                self.assertIsNone(snapshot.issuing_distribution_point)
+                selected = snapshot.revocation_for(issuer, 1)
+                expected = base_status if delta_status == 'absent' else delta_status
+                if expected in ('absent', 'remove'):
+                    self.assertIsNone(selected)
+                else:
+                    self.assertEqual(selected.reason, expected_reasons[expected])
+                    from_delta = delta_status != 'absent'
+                    day = 2 if from_delta else 1
+                    self.assertEqual(selected.revocation_date, datetime(2025, 1, day, tzinfo=timezone.utc))
+                    self.assertEqual(selected.invalidity_date, datetime(2024, 12, 30, tzinfo=timezone.utc) if from_delta else None)
+        COMPLETED_WITNESSES.add('crl_revocation_merge')
+
+    def test_indirect_crl_state_separates_issuers_and_inherits_names_per_list(self):
+        issue = self.crl_revision_factory()
+        early, late = b'250101000000Z', b'250102000000Z'
+        authority, issuer_a, issuer_b = (Name([NameAttribute(NameOID.COMMON_NAME, name)])
+                                         for name in ('Review issuer', 'Issuer A', 'Issuer B'))
+        name_a = der(0xa4, der(0x30, common_name_rdn(b'Issuer A')))
+        equivalent_a = der(0xa4, der(0x30, common_name_rdn(b'  ISSUER  A ')))
+        name_b = der(0xa4, der(0x30, common_name_rdn(b'Issuer B')))
+        own_name = der(0xa4, der(0x30, common_name_rdn(b'Review issuer')))
+        complete = issue(early, 1, scope=0x84, entries=(
+            review_revoked_entry(1, early, reason=1),
+            review_revoked_entry(1, early, reason=6, issuers=(name_a,)),
+            review_revoked_entry(2, early, reason=6),
+            review_revoked_entry(1, early, reason=6, issuers=(name_b,)),
+            review_revoked_entry(3, early, reason=6),
+        ))
+        delta = issue(late, 2, scope=0x84, base=1, entries=(
+            review_revoked_entry(2, late, reason=4),
+            review_revoked_entry(1, late, reason=8, issuers=(equivalent_a,)),
+            review_revoked_entry(2, late, reason=1),
+            review_revoked_entry(4, late, reason=5, issuers=(own_name,)),
+        ))
+        snapshot = merge_crl_revocations(complete, delta)
+        self.assertEqual(snapshot.issuing_distribution_point, der(0x30, der(0x84, b'\xff')))
+        for issuer, serial, reason in (
+            (authority, 1, ReasonFlags.key_compromise), (authority, 2, ReasonFlags.superseded),
+            (authority, 4, ReasonFlags.cessation_of_operation), (issuer_a, 1, None),
+            (issuer_a, 2, ReasonFlags.key_compromise), (issuer_b, 1, ReasonFlags.certificate_hold),
+            (issuer_b, 2, None), (issuer_b, 3, ReasonFlags.certificate_hold),
+        ):
+            with self.subTest(issuer=issuer, serial=serial):
+                entry = snapshot.revocation_for(issuer, serial)
+                self.assertEqual(entry.reason if entry is not None else None, reason)
+        COMPLETED_WITNESSES.add('crl_indirect_issuer')
+
+    def test_crl_merge_rejects_ambiguous_unsupported_and_duplicate_entries(self):
+        issue = self.crl_revision_factory()
+        early, late = b'250101000000Z', b'250102000000Z'
+        name_a = der(0xa4, der(0x30, common_name_rdn(b'Issuer A')))
+        name_b = der(0xa4, der(0x30, common_name_rdn(b'Issuer B')))
+        complete = issue(early, 1)
+        delta = issue(late, 2, base=1)
+        indirect_complete = issue(early, 1, scope=0x84)
+        indirect_delta = issue(late, 2, base=1, scope=0x84)
+        duplicate = review_revoked_entry(1, early, reason=6)
+        unknown_critical = x509_extension('1.2.3.4', Integer(2).dump(), critical=True)
+        unknown_noncritical = x509_extension('1.2.3.4', Integer(2).dump())
+        self.assertIsNone(merge_crl_revocations(complete, issue(late, 2, base=1, extra_extensions=unknown_noncritical))
+                          .revocation_for(Name([NameAttribute(NameOID.COMMON_NAME, 'Review issuer')]), 1))
+        cases = (
+            ('duplicate complete', issue(early, 1, entries=(duplicate, duplicate)), delta, 'duplicate revoked entry'),
+            ('duplicate delta', complete, issue(late, 2, base=1, entries=(duplicate, duplicate)), 'duplicate revoked entry'),
+            ('unknown critical CRL', issue(early, 1, extra_extensions=unknown_critical), delta, 'unsupported critical CRL extension'),
+            ('unknown critical entry', complete, issue(late, 2, base=1, entries=(review_revoked_entry(1, late, extra_extensions=unknown_critical),)),
+             'unsupported critical revoked-entry extension'),
+            ('direct issuer extension', complete, issue(late, 2, base=1, entries=(review_revoked_entry(1, late, issuers=(name_a,)),)),
+             'certificateIssuer must be critical and appear only in an indirect CRL'),
+            ('noncritical issuer extension', indirect_complete,
+             issue(late, 2, base=1, scope=0x84, entries=(review_revoked_entry(1, late, issuers=(name_a,), critical_issuer=False),)),
+             'certificateIssuer must be critical and appear only in an indirect CRL'),
+            ('issuer without DN', indirect_complete,
+             issue(late, 2, base=1, scope=0x84, entries=(review_revoked_entry(1, late, issuers=(der(0x82, b'issuer.example'),)),)),
+             'certificateIssuer requires a nonempty directoryName'),
+            ('different AKI', issue(early, 1, authority_key=b'first'), issue(late, 2, base=1, authority_key=b'second'),
+             'authority key identifiers must match'),
+            ('one missing AKI', issue(early, 1, authority_key=b'first'), delta, 'authority key identifiers must match'),
+            ('invalid pair rejected', complete, indirect_delta, 'same issuing distribution point scope'),
+        )
+        for label, base, update, error in cases:
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(ValueError, error):
+                    merge_crl_revocations(base, update, extension_schemas={'1.2.3.4': Integer})
+
+        merge_crl_revocations(issue(early, 1, authority_key=b'match'), issue(late, 2, base=1, authority_key=b'match'))
+        ambiguous = issue(late, 2, base=1, scope=0x84, entries=(review_revoked_entry(1, late, issuers=(name_a, name_b)),))
+        with self.assertRaisesRegex(AmbiguousCertificateIssuer, 'supply an issuer resolver'):
+            merge_crl_revocations(indirect_complete, ambiguous)
+        with self.assertRaisesRegex(AmbiguousCertificateIssuer, 'must select a directoryName'):
+            merge_crl_revocations(indirect_complete, ambiguous, issuer_resolver=lambda *_: Name([]))
+
+        def choose_issuer(serial, candidates):
+            self.assertEqual(serial, 1)
+            self.assertEqual(len(candidates), 2)
+            return candidates[1]
+
+        snapshot = merge_crl_revocations(indirect_complete, ambiguous, issuer_resolver=choose_issuer)
+        for name, present in (('Issuer A', False), ('Issuer B', True)):
+            issuer = Name([NameAttribute(NameOID.COMMON_NAME, name)])
+            self.assertEqual(snapshot.revocation_for(issuer, 1) is not None, present)
+        COMPLETED_WITNESSES.add('crl_merge_rejections')
+
+    def test_crl_merged_state_matches_contemporaneous_complete_crl(self):
+        issue = self.crl_revision_factory()
+        early, late = b'250101000000Z', b'250102000000Z'
+        previous = review_revoked_entry(1, early, reason=6)
+        untouched = review_revoked_entry(2, early)
+        new = review_revoked_entry(3, late, reason=1, invalidity=b'20241231000000Z')
+        complete = issue(early, 1, entries=(previous, untouched))
+        delta = issue(late, 2, base=1, entries=(review_revoked_entry(1, late, reason=8), new))
+        published = issue(late, 2, entries=(new, review_revoked_entry(2, early, reason=0)))
+        merge_crl_revocations(complete, delta, published_crl=published)
+        variants = (
+            ('missing entry', issue(late, 2, entries=(new,)), 'differs from the published complete CRL'),
+            ('extra entry', issue(late, 2, entries=(untouched, new, previous)), 'differs from the published complete CRL'),
+            ('wrong reason', issue(late, 2, entries=(untouched, review_revoked_entry(3, late, reason=5, invalidity=b'20241231000000Z'))),
+             'differs from the published complete CRL'),
+            ('wrong revocation date', issue(late, 2, entries=(untouched, review_revoked_entry(3, early, reason=1, invalidity=b'20241231000000Z'))),
+             'differs from the published complete CRL'),
+            ('wrong invalidity date', issue(late, 2, entries=(untouched, review_revoked_entry(3, late, reason=1))),
+             'differs from the published complete CRL'),
+            ('wrong number', issue(late, 3, entries=(untouched, new)), 'delta CRL number and thisUpdate'),
+            ('wrong issuer', issue(late, 2, common_name=b'Other', entries=(untouched, new)), 'same issuer name'),
+            ('wrong scope', issue(late, 2, scope=0x81, entries=(untouched, new)), 'same issuing distribution point scope'),
+            ('wrong time', issue(b'250103000000Z', 2, entries=(untouched, new)), 'delta CRL number and thisUpdate'),
+            ('published delta', delta, 'expected a published complete CRL'),
+        )
+        for label, candidate, error in variants:
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(ValueError, error):
+                    merge_crl_revocations(complete, delta, published_crl=candidate)
+        COMPLETED_WITNESSES.add('crl_published_state')
+
+    def test_openssl_independently_agrees_on_certificate_revocation(self):
+        early = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        late = early + timedelta(days=1)
+        expiry = late + timedelta(days=3)
+        eval_time = str(int((late + timedelta(days=1)).timestamp()))
+        pem, encoded_der = serialization.Encoding.PEM, serialization.Encoding.DER
+        signing_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048).public_key()
+        issuer = Name([NameAttribute(NameOID.COMMON_NAME, 'Test-only delta CA')])
+        ski = x509.SubjectKeyIdentifier.from_public_key(signing_key.public_key())
+        aki = x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ski)
+        point = x509.DistributionPoint([x509.UniformResourceIdentifier('http://example.invalid/delta.crl')],
+                                        None, None, None)
+
+        def certificate(subject, serial, *, ca=False):
+            builder = (x509.CertificateBuilder().subject_name(subject).issuer_name(issuer).serial_number(serial)
+                       .public_key(signing_key.public_key() if ca else leaf_key).not_valid_before(early - timedelta(days=1))
+                       .not_valid_after(expiry).add_extension(x509.BasicConstraints(ca, None), critical=True)
+                       .add_extension(aki, critical=False))
+            if ca:
+                usage = x509.KeyUsage(False, False, False, False, False, True, True, None, None)
+                builder = builder.add_extension(ski, critical=False).add_extension(usage, critical=True)
+            return builder.sign(signing_key, hashes.SHA256())
+
+        def crl(number, date, entries, *, delta_base=None):
+            builder = (x509.CertificateRevocationListBuilder().issuer_name(issuer).last_update(date).next_update(expiry)
+                       .add_extension(x509.CRLNumber(number), critical=False).add_extension(aki, critical=False))
+            if delta_base is None:
+                builder = builder.add_extension(x509.FreshestCRL([point]), critical=False)
+            else:
+                builder = builder.add_extension(x509.DeltaCRLIndicator(delta_base), critical=True)
+            for serial, revoked_at, reason in entries:
+                entry = (x509.RevokedCertificateBuilder().serial_number(serial).revocation_date(revoked_at)
+                         .add_extension(x509.CRLReason(reason), critical=False).build())
+                builder = builder.add_revoked_certificate(entry)
+            return builder.sign(signing_key, hashes.SHA256())
+
+        hold, remove = ReasonFlags.certificate_hold, ReasonFlags.remove_from_crl
+        compromise, superseded = ReasonFlags.key_compromise, ReasonFlags.superseded
+        base = crl(11, early, ((101, early, hold), (102, early, compromise), (104, early, hold)))
+        delta = crl(12, late, ((101, late, remove), (103, late, compromise), (104, late, superseded), (105, late, remove)),
+                    delta_base=11)
+        published = crl(12, late, ((102, early, compromise), (103, late, compromise), (104, late, superseded)))
+        (self.directory / 'root.pem').write_bytes(certificate(issuer, 1, ca=True).public_bytes(pem))
+        for label, item in (('base.pem', base), ('delta.pem', delta), ('latest.pem', published)):
+            (self.directory / label).write_bytes(item.public_bytes(pem))
+            verified = subprocess.run(['openssl', 'crl', '-verify', '-CAfile', 'root.pem', '-in', label, '-noout'],
+                                      cwd=self.directory, capture_output=True, check=True, timeout=15)
+            self.assertIn(b'verify OK', verified.stderr)
+        (self.directory / 'series.pem').write_bytes(base.public_bytes(pem) + delta.public_bytes(pem))
+        snapshot = merge_crl_revocations(base.public_bytes(encoded_der), delta.public_bytes(encoded_der),
+                                         published_crl=published.public_bytes(encoded_der))
+        cases = ((101, True, None), (102, True, compromise), (103, False, compromise), (104, True, superseded),
+                 (105, False, None), (106, False, None))
+        for serial, previously_revoked, expected_reason in cases:
+            subject = Name([NameAttribute(NameOID.COMMON_NAME, f'Test-only leaf {serial}')])
+            (self.directory / 'leaf.pem').write_bytes(certificate(subject, serial).public_bytes(pem))
+            recovered = snapshot.revocation_for(issuer, serial)
+            self.assertEqual(recovered.reason if recovered is not None else None, expected_reason)
+            for file, expected, flags in (('base.pem', previously_revoked, ()),
+                                          ('series.pem', expected_reason is not None, ('-extended_crl', '-use_deltas')),
+                                          ('latest.pem', expected_reason is not None, ())):
+                with self.subTest(serial=serial, crls=file):
+                    checked = subprocess.run(['openssl', 'verify', '-crl_check', *flags, '-attime', eval_time,
+                                              '-CAfile', 'root.pem', '-CRLfile', file, 'leaf.pem'],
+                                             cwd=self.directory, capture_output=True, timeout=15)
+                    if expected:
+                        self.assertNotEqual(checked.returncode, 0)
+                        self.assertIn(b'certificate revoked', checked.stderr)
+                    else:
+                        self.assertEqual(checked.returncode, 0, checked.stderr)
+        COMPLETED_WITNESSES.add('crl_openssl_state')
 
     def test_crl_issuer_revoked_sequence_and_implicit_flags(self):
         _, crl = self.issue_certificate_and_crl(version_2_crl=True)

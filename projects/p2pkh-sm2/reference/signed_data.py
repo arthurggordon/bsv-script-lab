@@ -1,12 +1,15 @@
 """SM2 SignedData verification and the direct payment adapter."""
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from itertools import groupby
+from types import MappingProxyType
 
 from asn1crypto.core import ObjectIdentifier
 from asn1crypto.x509 import Certificate as ASN1Certificate, DirectoryString, Name as ASN1Name
-from cryptography.x509 import ReasonFlags, UnrecognizedExtension, UnsupportedGeneralNameType
+from cryptography.x509 import CertificateRevocationList, DirectoryName, Name, ReasonFlags
+from cryptography.x509 import UnrecognizedExtension, UnsupportedGeneralNameType
 from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
 from cryptography.x509.oid import CRLEntryExtensionOID, ExtensionOID
 
@@ -98,6 +101,10 @@ class MissingAttributeSchema(ValueError):
 
 class MissingExtensionSchema(ValueError):
     """An X.509 extension's declared ASN.1 type is unavailable."""
+
+
+class AmbiguousCertificateIssuer(ValueError):
+    """An indirect CRL entry needs an authenticated issuer DN selection."""
 
 
 def _algorithm(fields, *allowed):
@@ -685,6 +692,7 @@ class _CRLRevision:
     issued: datetime
     number: int
     base: int | None
+    crl: CertificateRevocationList
 
 
 def _crl_revision(encoded, schemas):
@@ -698,7 +706,7 @@ def _crl_revision(encoded, schemas):
     delta = extensions.get(ExtensionOID.DELTA_CRL_INDICATOR)
     scope = extensions.get(ExtensionOID.ISSUING_DISTRIBUTION_POINT)
     return _CRLRevision(_issuer_key(crl.issuer), scope.public_bytes() if scope is not None else None,
-                        crl.last_update_utc, number.crl_number, delta.crl_number if delta is not None else None)
+                        crl.last_update_utc, number.crl_number, delta.crl_number if delta is not None else None, crl)
 
 
 def _check_crl_numbering(revisions):
@@ -733,12 +741,7 @@ def validate_crl_series(crls, *, extension_schemas=None):
     _check_crl_numbering([_crl_revision(encoded, extension_schemas) for encoded in crls])
 
 
-def validate_crl_pair(complete_crl, delta_crl, *, extension_schemas=None):
-    """Check whether the supplied complete CRL can be updated by the delta.
-
-    The caller authenticates both CRLs with the same authorized signing key.
-    The function checks the metadata for combining the two DER CRLs.
-    """
+def _validated_crl_pair(complete_crl, delta_crl, extension_schemas):
     complete = _crl_revision(complete_crl, extension_schemas)
     delta = _crl_revision(delta_crl, extension_schemas)
     if complete.base is not None or delta.base is None:
@@ -746,6 +749,119 @@ def validate_crl_pair(complete_crl, delta_crl, *, extension_schemas=None):
     if not delta.base <= complete.number < delta.number:
         raise ValueError('complete CRL number must be at least BaseCRLNumber and below the delta CRL number')
     _check_crl_numbering((complete, delta))
+    return complete, delta
+
+
+def validate_crl_pair(complete_crl, delta_crl, *, extension_schemas=None):
+    """Check whether the supplied complete CRL can be updated by the delta.
+
+    The caller authenticates both CRLs with the same authorized signing key.
+    The function checks the metadata for combining the two DER CRLs.
+    """
+    _validated_crl_pair(complete_crl, delta_crl, extension_schemas)
+
+
+@dataclass(frozen=True)
+class CRLRevocation:
+    revocation_date: datetime
+    reason: ReasonFlags
+    invalidity_date: datetime | None
+
+
+@dataclass(frozen=True)
+class CRLRevocationSnapshot:
+    number: int
+    this_update: datetime
+    next_update: datetime
+    issuing_distribution_point: bytes | None
+    _entries: Mapping[tuple, CRLRevocation] = field(repr=False)
+
+    def revocation_for(self, issuer: Name, serial_number: int) -> CRLRevocation | None:
+        """Return the entry in this scope, or None when the issuer and serial are absent."""
+        return self._entries.get((_issuer_key(issuer), serial_number))
+
+
+def _certificate_issuer_key(extension, serial, issuer_resolver):
+    names = extension.value.get_values_for_type(DirectoryName)
+    if not names or any(not name.rdns for name in names):
+        raise ValueError('certificateIssuer requires a nonempty directoryName for revocation lookup')
+    candidates = {_issuer_key(name): name for name in names}
+    if len(candidates) == 1:
+        return next(iter(candidates))
+    if issuer_resolver is None:
+        raise AmbiguousCertificateIssuer('certificateIssuer has multiple directoryNames; supply an issuer resolver')
+    chosen = issuer_resolver(serial, tuple(candidates.values()))
+    key = _issuer_key(chosen) if isinstance(chosen, Name) else None
+    if key not in candidates:
+        raise AmbiguousCertificateIssuer('issuer resolver must select a directoryName from certificateIssuer')
+    return key
+
+
+def _crl_revocations(revision, issuer_resolver):
+    extensions = {extension.oid: extension for extension in revision.crl.extensions}
+    for extension in extensions.values():
+        if extension.critical and extension.oid not in (ExtensionOID.ISSUING_DISTRIBUTION_POINT,
+                                                        ExtensionOID.DELTA_CRL_INDICATOR,
+                                                        ExtensionOID.ISSUER_ALTERNATIVE_NAME):
+            raise ValueError(f'unsupported critical CRL extension {extension.oid.dotted_string}')
+    distribution = extensions.get(ExtensionOID.ISSUING_DISTRIBUTION_POINT)
+    indirect = distribution is not None and distribution.value.indirect_crl
+    issuer = revision.issuer
+    entries = {}
+    for entry in revision.crl:
+        fields = {extension.oid: extension for extension in entry.extensions}
+        for extension in fields.values():
+            if extension.critical and extension.oid != CRLEntryExtensionOID.CERTIFICATE_ISSUER:
+                raise ValueError(f'unsupported critical revoked-entry extension {extension.oid.dotted_string}')
+        certificate_issuer = fields.get(CRLEntryExtensionOID.CERTIFICATE_ISSUER)
+        if certificate_issuer is not None:
+            if not indirect or not certificate_issuer.critical:
+                raise ValueError('certificateIssuer must be critical and appear only in an indirect CRL')
+            issuer = _certificate_issuer_key(certificate_issuer, entry.serial_number, issuer_resolver)
+        key = issuer, entry.serial_number
+        if key in entries:
+            raise ValueError('duplicate revoked entry for the same issuer and serial number')
+        reason = fields.get(CRLEntryExtensionOID.CRL_REASON)
+        invalidity = fields.get(CRLEntryExtensionOID.INVALIDITY_DATE)
+        entries[key] = CRLRevocation(entry.revocation_date_utc,
+                                     reason.value.reason if reason is not None else ReasonFlags.unspecified,
+                                     invalidity.value.invalidity_date_utc if invalidity is not None else None)
+    return entries
+
+
+def merge_crl_revocations(complete_crl, delta_crl, *, published_crl=None, issuer_resolver=None,
+                          extension_schemas=None):
+    """Return the revocation snapshot for a complete CRL and a compatible delta.
+
+    Authenticate the selected CRLs and their scope before use, including the
+    same authorized key for the complete and delta CRLs. When published_crl
+    is supplied, compare it to the merged state at the delta's number and
+    thisUpdate. An issuer_resolver(serial, names) can select an authenticated
+    issuer Name when an indirect entry supplies multiple directoryNames.
+    """
+    complete, delta = _validated_crl_pair(complete_crl, delta_crl, extension_schemas)
+    authority_key = ExtensionOID.AUTHORITY_KEY_IDENTIFIER
+    keys = [next((ext.value for ext in revision.crl.extensions if ext.oid == authority_key), None)
+            for revision in (complete, delta)]
+    if keys[0] != keys[1]:
+        raise ValueError('complete and delta CRL authority key identifiers must match')
+    entries = _crl_revocations(complete, issuer_resolver)
+    for key, revocation in _crl_revocations(delta, issuer_resolver).items():
+        if revocation.reason == ReasonFlags.remove_from_crl:
+            entries.pop(key, None)
+        else:
+            entries[key] = revocation
+
+    if published_crl is not None:
+        published = _crl_revision(published_crl, extension_schemas)
+        if published.base is not None or published.issued != delta.issued or published.number != delta.number:
+            raise ValueError('expected a published complete CRL with the delta CRL number and thisUpdate')
+        _check_crl_numbering((complete, delta, published))
+        if entries != _crl_revocations(published, issuer_resolver):
+            raise ValueError('merged revocation state differs from the published complete CRL')
+
+    return CRLRevocationSnapshot(delta.number, delta.issued, delta.crl.next_update_utc, delta.scope,
+                                 MappingProxyType(entries))
 
 
 def _check_optional_set(fields, tag, field_name, parse_member, *, nonempty=False):
