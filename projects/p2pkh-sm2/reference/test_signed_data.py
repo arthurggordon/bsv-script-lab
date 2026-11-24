@@ -44,21 +44,18 @@ def signed_data(signature, *, attached=None, sid=ISSUER_AND_SERIAL, version=2,
 class SignedDataTests(unittest.TestCase):
     def test_template_witness_is_identical_for_both_sighash_families(self):
         key, _, parent, tx, _, _ = fixture()
-        for flag, version, attached in (
-            (0x41, 2, False), (0x61, 2, True), (0x41, 1, False), (0x61, 1, True),
-        ):
-            with self.subTest(flag=hex(flag), version=version):
+        for flag, attached in ((0x41, False), (0x61, True)):
+            with self.subTest(flag=hex(flag), attached=attached):
                 def sign_raw(message, user_id):
                     return fixture_sign(1, message, 2, user_id)
 
                 def sign_envelope(message, user_id):
                     return signed_data(der_signature(sign_raw(message, user_id)),
-                                       attached=message if attached else None, version=version)
+                                       attached=message if attached else None)
 
                 funding = parent.serialize()
                 direct = sign_input(tx, 0, funding, key, sign_raw, flag)
-                adapter = signed_data_signer(sign_envelope, key, signer_identifier=ISSUER_AND_SERIAL,
-                                             signer_version=version)
+                adapter = signed_data_signer(sign_envelope, key, signer_identifier=ISSUER_AND_SERIAL)
                 adapted = sign_input(tx, 0, funding, key, adapter, flag)
                 self.assertEqual(adapted.serialize(), direct.serialize())
                 chain_check(adapted, (parent,), 0)
@@ -90,9 +87,8 @@ class SignedDataTests(unittest.TestCase):
         executable = os.environ['SM2_SIGNED_DATA_SIGNER']
         test_key = '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'
 
-        def request(message, detached=False, version=2):
-            arguments = [executable, '-message', message.hex(), '-key', test_key,
-                         '-signer-version', str(version)]
+        def request(message, detached=False):
+            arguments = [executable, '-message', message.hex(), '-key', test_key]
             if detached:
                 arguments.append('-detached')
             return json.loads(subprocess.check_output(arguments))
@@ -102,30 +98,26 @@ class SignedDataTests(unittest.TestCase):
         signer_identifier = bytes.fromhex(identity['signer_identifier_hex'])
         self.assertEqual(identity['signer_version'], 2)
 
-        for flag, detached, version in (
-            (0x41, False, 2), (0x61, True, 2), (0x41, False, 1), (0x61, True, 1),
-        ):
-            with self.subTest(flag=hex(flag), detached=detached, version=version):
+        for flag, detached in ((0x41, False), (0x61, True)):
+            with self.subTest(flag=hex(flag), detached=detached):
                 parent = Transaction((Input(b'\xa7' * 32, 0),),
                                      (Output(1000, locking_script_from_public_key(key)),))
                 tx = Transaction((Input(parent.txid_wire(), 0),), (Output(900, b'\x51'),))
 
                 def provider(message, user_id):
                     self.assertEqual(user_id, USER_ID)
-                    response = request(message, detached, version)
+                    response = request(message, detached)
                     self.assertEqual(bytes.fromhex(response['public_key_hex']), key)
                     self.assertEqual(bytes.fromhex(response['signer_identifier_hex']), signer_identifier)
-                    self.assertEqual(response['signer_version'], version)
+                    self.assertEqual(response['signer_version'], 2)
                     envelope = bytes.fromhex(response['envelope_hex'])
-                    if version == 2:
-                        self.assertEqual(verify_signed_data(
-                            envelope, {signer_identifier: (key, user_id)},
-                            detached_content=message if detached else None,
-                        ), message)
+                    self.assertEqual(verify_signed_data(
+                        envelope, {signer_identifier: (key, user_id)},
+                        detached_content=message if detached else None,
+                    ), message)
                     return envelope
 
-                adapter = signed_data_signer(provider, key, signer_identifier=signer_identifier,
-                                             signer_version=version)
+                adapter = signed_data_signer(provider, key, signer_identifier=signer_identifier)
                 adapted = sign_input(tx, 0, parent.serialize(), key, adapter, flag)
                 chain_check(adapted, (parent,), 0)
                 if os.environ.get('REGTEST_COOKIE'):
@@ -159,39 +151,12 @@ class SignedDataTests(unittest.TestCase):
                 signed_data_signer(lambda *_: envelope, key,
                                    signer_identifier=ISSUER_AND_SERIAL)(message, USER_ID)
 
-    def test_provider_version_and_identifier_are_pinned(self):
-        message = bytes(range(32))
+    def test_provider_identifier_requires_valid_configuration(self):
         key = encode_public(mul(1))
-        signature = der_signature(fixture_sign(1, message, 2))
-
-        def check(envelope, **options):
-            return signed_data_signer(lambda *_: envelope, key, signer_identifier=ISSUER_AND_SERIAL,
-                                      **options)(message, USER_ID)
-
-        cases = (
-            (1, signed_data(signature), 'expected SignerInfo version 1'),
-            (2, signed_data(signature, version=1), 'expected SignerInfo version 2'),
-            (1, signed_data(signature, version=3), 'expected SignerInfo version 1'),
-            (2, signed_data(signature, outer_version=2), 'unsupported SignedData version'),
-            (1, signed_data(signature, outer_version=2, version=1), 'unsupported SignedData version'),
-            (2, signed_data(signature, algorithm=SM2_WITH_SM3), 'unexpected SignedData algorithm'),
-            (1, signed_data(signature, version=1, signed_attrs=der(0xa0, b'')), 'signedAttrs'),
-            (1, signed_data(signature, version=1, sid=SKI), 'unexpected or truncated'),
-            (1, signed_data(signature, version=1, sid=OTHER_ISSUER_AND_SERIAL), 'signer identifier differs'),
-            (1, signed_data(signature, version=1, attached=bytes(32)), 'content differs'),
-        )
-        for version, envelope, error in cases:
-            with self.subTest(version=version, error=error), self.assertRaisesRegex(ValueError, error):
-                check(envelope, signer_version=version)
-        with self.assertRaisesRegex(ValueError, 'expected SignerInfo version 2'):
-            check(signed_data(signature, version=1))
-
         for identifier in (SKI, der(0x30, ISSUER + der(0x02, b'\x00')),
                            der(0x30, ISSUER + der(0x02, b'\x00\x01'))):
             with self.subTest(identifier=identifier), self.assertRaises(ValueError):
                 signed_data_signer(lambda *_: None, key, signer_identifier=identifier)
-        with self.assertRaisesRegex(ValueError, 'must be 1 or 2'):
-            check(b'', signer_version=3)
 
 
 if __name__ == '__main__':

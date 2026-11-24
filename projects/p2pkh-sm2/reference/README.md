@@ -53,19 +53,14 @@ signed_tx = sign_input(tx, input_index, funding_raw, public_key, signer, sighash
 DER `IssuerAndSerialNumber` from trusted configuration. Section 8, tables 2
 and 3 of GB/T 35275-2026 specify `SignedData.version = 1`,
 `SignerInfo.version = 2`, the issuer-and-serial identifier, and the SM2-1
-signature algorithm. These rules apply by default.
+signature algorithm. Both verification entry points enforce these rules.
 The payment adapter accepts both the SM3 OID and the unkeyed SM3 OID used
-by Appendix A.1. The default independent Go signer uses unkeyed SM3.
+by Appendix A.1. The independent Go signer uses unkeyed SM3.
 For these digest identifiers and the signature identifier, the adapter
 accepts omitted parameters or an empty DER NULL. Appendix A.1 uses NULL
 for the unkeyed SM3 and SM2-1 identifiers.
 
-For a legacy direct-signing provider, pass `signer_version=1` when configuring
-the adapter. The outer version stays at 1 and the signer identifier still uses
-the issuer and serial number. This mode also accepts the SM2-with-SM3
-algorithm identifier. The configured inner version must match on every response.
-
-Both modes verify one direct SM2 signature over the approved 32-byte payment
+The payment adapter verifies one direct SM2 signature over the approved 32-byte payment
 message with the pinned public key and the template's fixed SM2 user ID. If the
 envelope includes content, its bytes must match the payment message. The
 adapter checks the DER structure of embedded certificates, revocation lists
@@ -82,18 +77,13 @@ because the current template verifies the transaction message directly.
 The independent [Go signer](interop/go-signer/README.md) uses
 `github.com/emmansun/gmsm@v0.45.4` for SM2/SM3 and Go's ASN.1 encoder to emit
 complete DER envelopes from a separate process. Attached ForkID and detached
-Chronicle OTDA payments pass in both configured versions. The suite also
+Chronicle OTDA payments pass through BSV Node and chain-gang. The suite also
 checks an independent OpenSSL SM2 signature, rejects invalid envelopes and
 verifies byte-for-byte witness equivalence with the raw-signature path.
 
-In the GmSSL 3.2.0 `cmssign` replay, the v1 signature verified against the SM3
-digest of the DER `ContentInfo`. The payment adapter rejected it at the
-signature check because the template requires the SM2 user ID and the raw
-payment message as signature inputs.
-
 The [SignedData acceptance fixture](signed-data-acceptance.md) exhausts its
-540-row payment matrix and 256-row optional metadata matrix. It maps both to
-the standard's clauses and states the boundaries of the conformance evidence.
+270-row payment matrix and 128-row optional metadata matrix. It records the
+historical Appendix A.1 replay and maps the tests to the standard's clauses.
 
 ## SignedData signature verification
 

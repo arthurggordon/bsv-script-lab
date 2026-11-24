@@ -10,7 +10,6 @@ _SIGNED_DATA = bytes.fromhex('2a811ccf550601040202')
 _SM3 = bytes.fromhex('2a811ccf55018311')
 _SM3_UNKEYED = bytes.fromhex('2a811ccf5501831101')
 _SM2_SIGNATURE = bytes.fromhex('2a811ccf5501822d01')
-_SM2_WITH_SM3 = bytes.fromhex('2a811ccf55018375')
 _MESSAGE_DIGEST = bytes.fromhex('2a864886f70d010904')
 
 
@@ -251,22 +250,21 @@ def _signer_infos(fields):
     return signers
 
 
-def _signer_identifier(signer, version):
-    if signer.take(0x02) != bytes((version,)):
-        raise ValueError(f'expected SignerInfo version {version}')
+def _signer_identifier(signer):
+    if signer.take(0x02) != b'\x02':
+        raise ValueError('expected SignerInfo version 2')
     return signer.take_encoded(0x30)
 
 
-def _signer_signature(signer, version):
-    algorithms = (_SM2_SIGNATURE,) if version == 2 else (_SM2_SIGNATURE, _SM2_WITH_SM3)
-    _algorithm(signer, *algorithms)
+def _signer_signature(signer):
+    _algorithm(signer, _SM2_SIGNATURE)
     signature = _signature(signer.take(0x04))
     _check_optional_set(signer, 0xa1, 'unsignedAttrs', _attribute, nonempty=True)
     signer.done()
     return signature
 
 
-def _direct_signature(envelope, message, signer_identifier, signer_version):
+def _direct_signature(envelope, message, signer_identifier):
     fields = _signed_data(envelope)
     algorithms = _DER(fields.take(0x31))
     _digest_algorithm(algorithms)
@@ -280,12 +278,12 @@ def _direct_signature(envelope, message, signer_identifier, signer_version):
     signers = _DER(_signer_infos(fields))
     signer = _DER(signers.take(0x30))
     signers.done()
-    if _signer_identifier(signer, signer_version) != signer_identifier:
+    if _signer_identifier(signer) != signer_identifier:
         raise ValueError('SignedData signer identifier differs from the configured signer')
     _digest_algorithm(signer)
     if signer.next_is(0xa0):
         raise ValueError('signedAttrs signatures cannot authorize the existing payment template')
-    return _signer_signature(signer, signer_version)
+    return _signer_signature(signer)
 
 
 def _signed_attribute_payload(encoded, content_digest):
@@ -337,7 +335,7 @@ def verify_signed_data(envelope, trusted_signers, *, detached_content=None):
     content_digest = sm3(content)
     for encoded in _set_members(signers, 0x30):
         signer = _DER(_DER(encoded).take(0x30))
-        identifier = _signer_identifier(signer, 2)
+        identifier = _signer_identifier(signer)
         _check_issuer_and_serial_number(identifier)
         if identifier not in trusted_signers:
             raise ValueError('untrusted SignedData signer identifier')
@@ -346,22 +344,19 @@ def verify_signed_data(envelope, trusted_signers, *, detached_content=None):
         payload = content
         if signer.next_is(0xa0):
             payload = _signed_attribute_payload(signer.take_encoded(0xa0), content_digest)
-        signature = _signer_signature(signer, 2)
+        signature = _signer_signature(signer)
         if not verify(key, payload, signature, user_id):
             raise ValueError('invalid SignedData signature')
     return content
 
 
-def signed_data_signer(signer, key, *, signer_identifier, signer_version=2):
+def signed_data_signer(signer, key, *, signer_identifier):
     """Adapt signer(message, user_id) returning SignedData to the wallet API.
 
     Pin the complete DER IssuerAndSerialNumber from trusted signer configuration.
-    Select signer_version=1 for a legacy provider that directly signs the payment
-    message with the template SM2 user ID. Each provider accepts one version.
+    Require SignedData version 1 and SignerInfo version 2 for every response.
     """
     parse_public(key)
-    if type(signer_version) is not int or signer_version not in (1, 2):
-        raise ValueError('SignerInfo version must be 1 or 2')
     if not isinstance(signer_identifier, bytes):
         raise ValueError('expected a pinned DER IssuerAndSerialNumber')
     _check_issuer_and_serial_number(signer_identifier)
@@ -372,7 +367,7 @@ def signed_data_signer(signer, key, *, signer_identifier, signer_version=2):
         envelope = signer(message, user_id)
         if not isinstance(envelope, bytes):
             raise ValueError('expected a DER SignedData response')
-        signature = _direct_signature(envelope, message, signer_identifier, signer_version)
+        signature = _direct_signature(envelope, message, signer_identifier)
         if not verify(key, message, signature, user_id):
             raise ValueError('SignedData does not authorize the approved transaction message')
         return signature

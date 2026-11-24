@@ -18,10 +18,8 @@ import (
 var (
 	oidData       = asn1.ObjectIdentifier{1, 2, 156, 10197, 6, 1, 4, 2, 1}
 	oidSignedData = asn1.ObjectIdentifier{1, 2, 156, 10197, 6, 1, 4, 2, 2}
-	oidSM3        = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 401}
 	oidSM3Unkeyed = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 401, 1}
 	oidSM2Sign    = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 301, 1}
-	oidSM2WithSM3 = asn1.ObjectIdentifier{1, 2, 156, 10197, 1, 501}
 )
 
 type algorithmIdentifier struct {
@@ -69,19 +67,9 @@ func main() {
 	messageHex := flag.String("message", "", "hex-encoded message")
 	keyHex := flag.String("key", "", "hex-encoded 32-byte test private key")
 	detached := flag.Bool("detached", false, "omit the signed content")
-	signerVersion := flag.Int("signer-version", 2, "SignerInfo version (1 or 2)")
 	flag.Parse()
 
-	signatureAlgorithm := oidSM2Sign
-	digestAlgorithm := oidSM3Unkeyed
-	switch *signerVersion {
-	case 1:
-		signatureAlgorithm = oidSM2WithSM3
-		digestAlgorithm = oidSM3
-	case 2:
-	default:
-		fail(fmt.Errorf("SignerInfo version must be 1 or 2"))
-	}
+	const signerVersion = 2
 
 	message, err := hex.DecodeString(*messageHex)
 	if err != nil {
@@ -122,13 +110,13 @@ func main() {
 	}
 	body, err := asn1.Marshal(signedData{
 		Version:          1,
-		DigestAlgorithms: []algorithmIdentifier{{Algorithm: digestAlgorithm}},
+		DigestAlgorithms: []algorithmIdentifier{{Algorithm: oidSM3Unkeyed}},
 		Content:          encapsulated,
 		SignerInfos: []signerInfo{{
-			Version:            *signerVersion,
+			Version:            signerVersion,
 			SignerIdentifier:   identifier,
-			DigestAlgorithm:    algorithmIdentifier{Algorithm: digestAlgorithm},
-			SignatureAlgorithm: algorithmIdentifier{Algorithm: signatureAlgorithm},
+			DigestAlgorithm:    algorithmIdentifier{Algorithm: oidSM3Unkeyed},
+			SignatureAlgorithm: algorithmIdentifier{Algorithm: oidSM2Sign},
 			Signature:          signature,
 		}},
 	})
@@ -147,7 +135,7 @@ func main() {
 		EnvelopeHex:         hex.EncodeToString(envelope),
 		PublicKeyHex:        hex.EncodeToString(publicKey),
 		SignerIdentifierHex: hex.EncodeToString(identifierDER),
-		SignerVersion:       *signerVersion,
+		SignerVersion:       signerVersion,
 	}); err != nil {
 		fail(err)
 	}

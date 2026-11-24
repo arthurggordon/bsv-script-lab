@@ -26,14 +26,13 @@ OTHER_ID = b'other user ID'
 NULL = der(0x05, b'')
 MESSAGE_DIGEST_OID = bytes.fromhex('06092a864886f70d010904')
 
-CONFIGURED_VERSIONS = (1, 2)
 SIGNER_VERSIONS = (1, 2, 3)
 OUTER_VERSIONS = (1, 2)
 CONTENTS = (None, MESSAGE, OTHER_MESSAGE)
 ALGORITHMS = (SM2, SM2_WITH_SM3, SM3)
 SIGNATURES = ('direct', 'attributes', 'other_key', 'other_id', 'other_message')
-AXES = (CONFIGURED_VERSIONS, SIGNER_VERSIONS, OUTER_VERSIONS, CONTENTS, ALGORITHMS, SIGNATURES)
-CASE_COUNT = 540
+AXES = (SIGNER_VERSIONS, OUTER_VERSIONS, CONTENTS, ALGORITHMS, SIGNATURES)
+CASE_COUNT = 270
 
 # Fields of §8 tables 2 and 3 and the signature-input rules that follow them.
 TABLE_2 = ('version', 'digestAlgorithms', 'encapContentInfo', 'certificates', 'crls', 'signerInfos')
@@ -46,16 +45,16 @@ CLAUSE_EVIDENCE = {
     '6.4.SignatureAlgorithmIdentifier': ('payment_matrix', 'digest_set'),
     '6.5.Certificates': ('metadata', 'certificate_fields'),
     '6.6.IssuerAndSerialNumber': ('issuer', 'single_field'),
-    '6.8.Version': ('payment_matrix',),
+    '6.8.Version': ('payment_matrix', 'version_octet'),
     '6.9.Attribute': ('unsigned_attribute',),
     '7.Data': ('payment_matrix', 'single_field'),
-    '8.table2.version': ('payment_matrix',),
+    '8.table2.version': ('payment_matrix', 'version_octet'),
     '8.table2.digestAlgorithms': ('digest_set', 'single_field'),
     '8.table2.encapContentInfo': ('payment_matrix', 'single_field'),
     '8.table2.certificates': ('metadata', 'certificate_fields'),
     '8.table2.crls': ('metadata', 'crl_next_update'),
     '8.table2.signerInfos': ('signer_count_policy', 'verify_all_signers'),
-    '8.table3.version': ('payment_matrix',),
+    '8.table3.version': ('payment_matrix', 'version_octet'),
     '8.table3.issuerAndSerialNumber': ('issuer', 'single_field'),
     '8.table3.digestAlgorithm': ('single_field',),
     '8.table3.signedAttrs': ('signed_attrs_policy', 'verify_signed_attributes'),
@@ -130,9 +129,8 @@ class SignedDataAcceptance(unittest.TestCase):
             return False
         self.fail(f'OpenSSL could not verify the fixture: {result.returncode} {result.stderr!r}')
 
-    def apply_adapter(self, envelope, version=2):
-        adapter = signed_data_signer(lambda *_: envelope, self.key,
-                                     signer_identifier=ISSUER_AND_SERIAL, signer_version=version)
+    def apply_adapter(self, envelope):
+        adapter = signed_data_signer(lambda *_: envelope, self.key, signer_identifier=ISSUER_AND_SERIAL)
         return adapter(MESSAGE, USER_ID)
 
     def test_external_signatures_bind_the_declared_payloads(self):
@@ -174,29 +172,35 @@ class SignedDataAcceptance(unittest.TestCase):
         # this octet reuses the published content, certificate and signature.
         version_2 = encoded[:862] + b'\x02' + encoded[863:]
         self.assertEqual(verify_signed_data(version_2, {sid: (key, USER_ID)}), message)
-        for version in CONFIGURED_VERSIONS:
-            adapter = signed_data_signer(lambda *_: encoded, key, signer_identifier=sid, signer_version=version)
-            with self.subTest(version=version), self.assertRaisesRegex(ValueError, 'expected the template transaction message'):
-                adapter(message, USER_ID)
         COMPLETED_WITNESSES.add('appendix_a1')
 
+    def test_both_entry_points_enforce_the_standard_version_octets(self):
+        signature = self.signatures['direct']
+        self.assertTrue(self.external_verify(signature, MESSAGE))
+        current = signed_data(signature, attached=MESSAGE)
+        self.assertEqual(self.apply_adapter(current), self.raw_direct)
+        self.assertEqual(verify_signed_data(current, self.trusted_signers), MESSAGE)
+        for changed, delta, error in (
+            (signed_data(signature, attached=MESSAGE, version=1), (2, 1), 'expected SignerInfo version 2'),
+            (signed_data(signature, attached=MESSAGE, outer_version=2), (1, 2), 'unsupported SignedData version'),
+        ):
+            self.assertEqual([(old, new) for old, new in zip(current, changed, strict=True) if old != new], [delta])
+            for entry_point in (self.apply_adapter, lambda envelope: verify_signed_data(envelope, self.trusted_signers)):
+                with self.subTest(delta=delta, entry_point=entry_point.__name__), self.assertRaisesRegex(ValueError, error):
+                    entry_point(changed)
+        COMPLETED_WITNESSES.add('version_octet')
+
     def test_payment_decision_exhausts_the_declared_domain(self):
-        # These are the only three admissible version/algorithm pairs, with one
-        # row for each of the two allowed content modes.
         expected = {
-            (1, 1, 1, None, SM2, 'direct'),
-            (1, 1, 1, MESSAGE, SM2, 'direct'),
-            (1, 1, 1, None, SM2_WITH_SM3, 'direct'),
-            (1, 1, 1, MESSAGE, SM2_WITH_SM3, 'direct'),
-            (2, 2, 1, None, SM2, 'direct'),
-            (2, 2, 1, MESSAGE, SM2, 'direct'),
+            (2, 1, None, SM2, 'direct'),
+            (2, 1, MESSAGE, SM2, 'direct'),
         }
         visited, accepted = set(), set()
         self.assertEqual(prod(map(len, AXES)), CASE_COUNT)
         self.assertTrue(all(len(set(axis)) == len(axis) for axis in AXES))
         for case in product(*AXES):
-            configured, signer, outer, content, algorithm, payload = case
-            with self.subTest(configured=configured, signer=signer, outer=outer,
+            signer, outer, content, algorithm, payload = case
+            with self.subTest(signer=signer, outer=outer,
                               content=CONTENTS.index(content), algorithm=ALGORITHMS.index(algorithm),
                               payload=payload):
                 self.assertTrue(all(value in axis for value, axis in zip(case, AXES, strict=True)))
@@ -207,11 +211,11 @@ class SignedDataAcceptance(unittest.TestCase):
                     algorithm=algorithm, signed_attrs=self.attributes if payload == 'attributes' else b'',
                 )
                 if case in expected:
-                    self.assertEqual(self.apply_adapter(envelope, configured), self.raw_direct)
+                    self.assertEqual(self.apply_adapter(envelope), self.raw_direct)
                     accepted.add(case)
                 else:
                     with self.assertRaises(ValueError):
-                        self.apply_adapter(envelope, configured)
+                        self.apply_adapter(envelope)
         self.assertEqual(len(visited), CASE_COUNT)
         self.assertEqual(accepted, expected)
         COMPLETED_WITNESSES.add('payment_matrix')
@@ -488,7 +492,7 @@ class SignedDataAcceptance(unittest.TestCase):
         unsigned_attribute = der(0x30, bytes.fromhex('06092a864886f70d010902')
                                  + der(0x31, der(0x16, b'Test metadata')))
         states = ('absent', 'empty', 'valid', 'wrong_type')
-        axes = (CONFIGURED_VERSIONS, (None, MESSAGE), states, states, states)
+        axes = ((None, MESSAGE), states, states, states)
         fields = (
             ('certificates', 0xa0, cert),
             ('crls', 0xa1, crl),
@@ -497,10 +501,10 @@ class SignedDataAcceptance(unittest.TestCase):
         accepted = set()
         visited = set()
         self.assertTrue(all(len(set(axis)) == len(axis) for axis in axes))
-        self.assertEqual(prod(map(len, axes)), 256)
+        self.assertEqual(prod(map(len, axes)), 128)
         for case in product(*axes):
-            version, content, *field_states = case
-            with self.subTest(version=version, attached=content is not None, states=field_states):
+            content, *field_states = case
+            with self.subTest(attached=content is not None, states=field_states):
                 self.assertTrue(all(value in axis for value, axis in zip(case, axes, strict=True)))
                 self.assertNotIn(case, visited)
                 visited.add(case)
@@ -511,19 +515,19 @@ class SignedDataAcceptance(unittest.TestCase):
                     metadata.append(b'' if member is None else der(tag, member))
                     if state == 'wrong_type' or (name == 'unsignedAttrs' and state == 'empty'):
                         invalid.append(name)
-                envelope = signed_data(self.signatures['direct'], attached=content, version=version,
+                envelope = signed_data(self.signatures['direct'], attached=content,
                                        metadata=metadata[0] + metadata[1], unsigned_attrs=metadata[2])
                 if invalid:
                     with self.assertRaisesRegex(ValueError, 'invalid SignedData ' + invalid[0]):
-                        self.apply_adapter(envelope, version)
+                        self.apply_adapter(envelope)
                 else:
-                    self.assertEqual(self.apply_adapter(envelope, version), self.raw_direct)
+                    self.assertEqual(self.apply_adapter(envelope), self.raw_direct)
                     accepted.add(case)
 
-        self.assertEqual(len(visited), 256)
+        self.assertEqual(len(visited), 128)
         allowed = ('absent', 'empty', 'valid')
-        self.assertEqual(accepted, set(product(*axes[:2], allowed, allowed, ('absent', 'valid'))))
-        self.assertEqual(len(accepted), 72)
+        self.assertEqual(accepted, set(product(axes[0], allowed, allowed, ('absent', 'valid'))))
+        self.assertEqual(len(accepted), 36)
 
         for field, tag, member in (
             ('certificates', 0xa0, der(0x30, b'')),
@@ -548,11 +552,9 @@ class SignedDataAcceptance(unittest.TestCase):
         without_next_update = der(0x30, modified_tbs + signature_algorithm + der(0x03, b'\0' + signature))
         self.assertIsNotNone(issued.next_update_utc)
         self.assertIsNone(load_der_x509_crl(without_next_update).next_update_utc)
-        for version in CONFIGURED_VERSIONS:
-            envelope = signed_data(self.signatures['direct'], version=version,
-                                   metadata=der(0xa1, without_next_update))
-            with self.subTest(version=version), self.assertRaisesRegex(ValueError, 'invalid SignedData crls: missing CRL nextUpdate'):
-                self.apply_adapter(envelope, version)
+        envelope = signed_data(self.signatures['direct'], metadata=der(0xa1, without_next_update))
+        with self.assertRaisesRegex(ValueError, 'invalid SignedData crls: missing CRL nextUpdate'):
+            self.apply_adapter(envelope)
         COMPLETED_WITNESSES.add('crl_next_update')
 
     def test_unsigned_attribute_der_structure_and_order(self):
