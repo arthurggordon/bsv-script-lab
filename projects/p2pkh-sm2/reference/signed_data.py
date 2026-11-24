@@ -1,5 +1,6 @@
 """SM2 SignedData verification and the direct payment adapter."""
 
+from calendar import monthrange
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -10,7 +11,7 @@ from asn1crypto.core import ObjectIdentifier
 from asn1crypto.x509 import Certificate as ASN1Certificate, DirectoryString, Name as ASN1Name
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.x509 import CertificateRevocationList, DirectoryName, DistributionPoint
-from cryptography.x509 import IssuingDistributionPoint, Name, ReasonFlags
+from cryptography.x509 import IssuingDistributionPoint, Name, ReasonFlags, Version
 from cryptography.x509 import ExtensionNotFound, UnrecognizedExtension, UnsupportedGeneralNameType
 from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
 from cryptography.x509.oid import CRLEntryExtensionOID, ExtensionOID
@@ -38,6 +39,8 @@ _CURVE_SM2 = bytes.fromhex('2a811ccf5501822d')
 _SM2_X509_SIGNATURE_OIDS = frozenset(ObjectIdentifier(contents=oid).dotted
                                       for oid in (_SM2_SIGNATURE, _SM2_WITH_SM3))
 _MESSAGE_DIGEST = ObjectIdentifier('1.2.840.113549.1.9.4').contents  # PKCS #9 messageDigest
+_COMMON_NAME = ObjectIdentifier('2.5.4.3').contents
+_DIRECTORY_STRING_TAGS = frozenset((0x0c, 0x13, 0x14, 0x1c, 0x1e))
 _BASIC_CONSTRAINTS = bytes.fromhex('551d13')
 _NAME_CONSTRAINTS = bytes.fromhex('551d1e')
 _POLICY_MAPPINGS = bytes.fromhex('551d21')
@@ -142,6 +145,11 @@ def _minimal_integer(value):
                 or value[0] == 0xff and value[1] >= 0x80)
 
 
+def _check_certificate_serial(serial):
+    if not _minimal_integer(serial) or serial[0] & 0x80 or not any(serial) or len(serial) > 20:
+        raise ValueError('expected a positive certificate serial number of at most 20 octets')
+
+
 def _signature(der):
     outer = _DER(der)
     values = _DER(outer.take(0x30))
@@ -167,9 +175,7 @@ def _check_issuer_and_serial_number(identifier):
         _check_issuer_name(fields.take(0x30))
     except ValueError as error:
         raise ValueError(f'invalid DER issuer Name: {error}') from error
-    serial = fields.take(0x02)
-    if not _minimal_integer(serial) or serial[0] & 0x80 or not any(serial):
-        raise ValueError('expected a positive DER certificate serial number')
+    _check_certificate_serial(fields.take(0x02))
     fields.done()
 
 
@@ -183,8 +189,15 @@ def _check_issuer_name(encoded):
             raise ValueError('empty DER issuer RDN')
         for member in _set_members(rdn, 0x30):
             attribute = _DER(_DER(member).take(0x30))
-            _check_oid(attribute.take(0x06))
-            _check_open_value(attribute.take_encoded())
+            oid = attribute.take(0x06)
+            _check_oid(oid)
+            value = attribute.take_encoded()
+            _check_open_value(value)
+            if oid == _COMMON_NAME:
+                if value[0] not in _DIRECTORY_STRING_TAGS:
+                    raise ValueError('commonName must be a DirectoryString')
+                if not 1 <= len(DirectoryString.load(value, strict=True).native) <= 64:
+                    raise ValueError('commonName must contain 1 to 64 characters')
             attribute.done()
 
 
@@ -341,6 +354,18 @@ def _check_der_time(tag, value, *, allow_fraction=True):
         raise ValueError('invalid DER time encoding, expected UTC with seconds')
     if point and (utc or not allow_fraction or not fraction.isdigit() or fraction.endswith(b'0')):
         raise ValueError('invalid DER time fraction')
+    year_digits, clock = digits[:-10], digits[-10:]
+    year = int(year_digits)
+    if utc:
+        year += 1900 if year >= 50 else 2000
+    month, day, hour, minute, second = (int(clock[offset:offset + 2]) for offset in range(0, 10, 2))
+    if not 1 <= month <= 12:
+        raise ValueError('invalid DER calendar date')
+    last_day = monthrange(year, month)[1]
+    if not 1 <= day <= last_day:
+        raise ValueError('invalid DER calendar date')
+    if hour > 23 or minute > 59 or second > 60 or (second == 60 and (day, hour, minute) != (last_day, 23, 59)):
+        raise ValueError('invalid DER clock time')
 
 
 def _check_x509_time(fields):
@@ -524,9 +549,7 @@ def _check_certificate(encoded, *, profile=False, schemas=None):
         version_field.done()
         if version not in (b'\x01', b'\x02'):
             raise ValueError('expected certificate v2, v3, or omitted v1 default')
-    serial = tbs.take(0x02)
-    if not _minimal_integer(serial) or serial[0] & 0x80 or not any(serial) or len(serial) > 20:
-        raise ValueError('expected a positive certificate serial number of at most 20 octets')
+    _check_certificate_serial(tbs.take(0x02))
     _check_x509_signature(tbs, fields)
     issuer = tbs.take(0x30)
     if not issuer:
@@ -1020,8 +1043,9 @@ def _general_name_matches(left, right):
     return left == right
 
 
-def _crl_distribution_coverage(snapshot, point, certificate_issuer, *, is_ca):
+def _crl_distribution_coverage(snapshot, point, certificate, *, is_ca):
     distribution = snapshot._distribution
+    certificate_issuer = certificate.issuer
     if point.crl_issuer is None:
         if _issuer_key(snapshot.issuer) != _issuer_key(certificate_issuer):
             return None
@@ -1037,6 +1061,8 @@ def _crl_distribution_coverage(snapshot, point, certificate_issuer, *, is_ca):
         return reasons
     if (distribution.only_contains_attribute_certs or (distribution.only_contains_user_certs and is_ca)
             or (distribution.only_contains_ca_certs and not is_ca)):
+        return None
+    if certificate.version != Version.v3 and (distribution.only_contains_user_certs or distribution.only_contains_ca_certs):
         return None
     if distribution.full_name is not None or distribution.relative_name is not None:
         if point.full_name is None and point.relative_name is None:
@@ -1151,11 +1177,11 @@ def _assess_revocation_status(certificate, snapshots, validation_time):
     covered = set()
     revocations = []
     for snapshot in _latest_crl_scopes(snapshots, validation_time):
-        matched = [_crl_distribution_coverage(snapshot, point, target.issuer, is_ca=is_ca)
+        matched = [_crl_distribution_coverage(snapshot, point, target, is_ca=is_ca)
                    for point in distribution_points]
         applicable = [reasons for reasons in matched if reasons is not None]
         if not applicable:
-            default_coverage = _crl_distribution_coverage(snapshot, default_point, target.issuer, is_ca=is_ca)
+            default_coverage = _crl_distribution_coverage(snapshot, default_point, target, is_ca=is_ca)
             if default_coverage is not None:
                 applicable.append(default_coverage)
         reasons = frozenset().union(*applicable)

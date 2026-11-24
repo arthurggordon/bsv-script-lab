@@ -10,9 +10,10 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from asn1crypto.core import Integer, ObjectIdentifier, OctetString, SetOf
+from asn1crypto.x509 import Certificate as ASN1Certificate
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509 import Name, NameAttribute, ReasonFlags, load_der_x509_certificate, load_der_x509_crl
 from cryptography.x509.oid import NameOID
 from ecdsa.der import read_length, remove_integer, remove_sequence
@@ -68,7 +69,7 @@ CLAUSE_EVIDENCE = {
                       'x509_time', 'x509_signature', 'x509_extensions'),
     '8.table2.signerInfos': ('signer_count_policy', 'verify_all_signers', 'format_only'),
     '8.table3.version': ('payment_matrix', 'version_octet'),
-    '8.table3.issuerAndSerialNumber': ('issuer', 'single_field'),
+    '8.table3.issuerAndSerialNumber': ('issuer', 'signer_serial_length', 'single_field'),
     '8.table3.digestAlgorithm': ('single_field',),
     '8.table3.signedAttrs': ('signed_attrs_policy', 'verify_signed_attributes', 'open_value_der', 'open_value_forms'),
     '8.table3.signatureAlgorithm': ('payment_matrix',),
@@ -95,9 +96,9 @@ CLAUSE_EVIDENCE = {
     'GB/T 20518-2018.5.2.4.2.17.FreshestCRL': ('certificate_extension_shapes',),
     'GB/T 20518-2018.5.2.4.2.19-22.IdentificationNumbers': ('certificate_identification_numbers',),
     'GB/T 20518-2018.5.2.4.3.2-3.InformationAccess': ('certificate_extension_shapes',),
-    'GB/T 20518-2018.5.2.3.2.SerialNumber': ('certificate_fields',),
+    'GB/T 20518-2018.5.2.3.2.SerialNumber': ('certificate_fields', 'signer_serial_length'),
     'GB/T 20518-2018.5.2.3.3.Signature': ('x509_algorithms',),
-    'GB/T 20518-2018.5.2.3.4.Issuer': ('certificate_fields',),
+    'GB/T 20518-2018.5.2.3.4.Issuer': ('certificate_fields', 'issuer'),
     'GB/T 20518-2018.5.3.3.2.Signature': ('x509_algorithms',),
     'GB/T 20518-2018.5.3.3.3.CRLIssuer': ('crl_field_encoding',),
     'GB/T 20518-2018.5.3.4.1-5.CRLExtensionProfile': ('crl_profile',),
@@ -114,6 +115,8 @@ CLAUSE_EVIDENCE = {
     'RFC 5280.5.2.3.CRLNumbers': ('crl_profile', 'crl_series'),
     'RFC 5280.5.2.4.DeltaCombinationMetadata': ('crl_pair',),
     'RFC 5280.5.2.4.LocalCRLMetadata': ('crl_revocation_merge',),
+    'RFC 5280.5.2.5.CertificateVersionScope': ('crl_legacy_scope',),
+    'RFC 5280.4.1.2.5.InclusiveValidity': ('certificate_validity_boundary',),
     'RFC 5280.5.3.3.IndirectCRLEntryIssuer': ('crl_indirect_issuer', 'crl_merge_rejections'),
     'RFC 5280.6.3.3.c.AuthorityKeyIdentifier': ('crl_merge_rejections',),
     'RFC 5280.6.3.3.a.CRLValidationTime': ('crl_assessment_time',),
@@ -137,7 +140,7 @@ CLAUSE_EVIDENCE = {
     'X.690.10.2.StringEncodingForms': ('open_value_der', 'open_value_forms'),
     'X.690.11.2.1.UnusedBits': ('open_value_der',),
     'X.690.11.5.DefaultComponents': ('x509_extensions', 'crl_field_encoding'),
-    'X.690.11.7-11.8.TimeEncoding': ('open_value_forms',),
+    'X.690.11.7-11.8.TimeEncoding': ('open_value_forms', 'attribute_calendar_time'),
 }
 COMPLETED_WITNESSES = set()
 
@@ -446,20 +449,101 @@ class SignedDataAcceptance(SignedDataFixtures):
         signature = self.signatures['direct']
         self.assertEqual(self.apply_adapter(signed_data(signature)), self.raw_direct)
         serial = der(0x02, b'\x01')
+        common_name = ObjectIdentifier('2.5.4.3').dump()
+
+        def rdn(value):
+            return der(0x31, der(0x30, common_name + value))
+
         cases = (
             ('empty Name', b''),
             ('NULL instead of an RDN', NULL),
             ('NULL instead of an attribute', der(0x31, NULL)),
             ('empty RDN', der(0x31, b'')),
             ('missing attribute value', der(0x31, der(0x30, bytes.fromhex('0603550403')))),
+            ('commonName NULL', rdn(NULL)),
+            ('commonName empty', rdn(der(0x0c, b''))),
+            ('commonName over 64 characters', rdn(der(0x0c, b'x' * 65))),
         )
-        for name, rdn in cases:
-            sid = der(0x30, der(0x30, rdn) + serial)
-            matching_envelope = signed_data(signature, sid=sid)
-            with self.subTest(issuer=name), self.assertRaisesRegex(ValueError, 'invalid DER issuer Name'):
-                signed_data_signer(lambda *_: matching_envelope, self.key,
-                                   signer_identifier=sid)(MESSAGE, USER_ID)
+        cases += (('commonName PrintableString', rdn(der(0x13, b'x' * 64))),
+                  ('commonName UTF8String', rdn(der(0x0c, '测'.encode() * 64))))
+        for name, member in cases:
+            sid = der(0x30, der(0x30, member) + serial)
+            envelope = signed_data(signature, attached=MESSAGE, sid=sid)
+            controls = ('commonName PrintableString', 'commonName UTF8String')
+            checks = (
+                (lambda: validate_signed_data_format(envelope, require_signer=True), None),
+                (lambda: verify_signed_data(envelope, {sid: (self.key, USER_ID)}), MESSAGE),
+                (lambda: signed_data_signer(lambda *_: envelope, self.key, signer_identifier=sid)(MESSAGE, USER_ID), self.raw_direct),
+            )
+            for index, (check, expected) in enumerate(checks):
+                with self.subTest(issuer=name, entry_point=index):
+                    if name in controls:
+                        self.assertEqual(check(), expected)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'invalid DER issuer Name'):
+                            check()
         COMPLETED_WITNESSES.add('issuer')
+
+    def test_signer_serial_number_respects_the_der_octet_limit(self):
+        body, _ = remove_sequence(ISSUER_AND_SERIAL)
+        issuer = next(encoded_fields(body))
+        signature = self.signatures['direct']
+        cases = ((b'\x7f' + bytes(19), True), (b'\x00\x80' + bytes(18), True),
+                 (b'\x00\x80' + bytes(19), False))
+        for serial, accepted in cases:
+            sid = der(0x30, issuer + der(0x02, serial))
+            envelope = signed_data(signature, attached=MESSAGE, sid=sid)
+            checks = (
+                (lambda: validate_signed_data_format(envelope, require_signer=True), None),
+                (lambda: verify_signed_data(envelope, {sid: (self.key, USER_ID)}), MESSAGE),
+                (lambda: signed_data_signer(lambda *_: envelope, self.key, signer_identifier=sid)(MESSAGE, USER_ID), self.raw_direct),
+            )
+            for index, (check, expected) in enumerate(checks):
+                with self.subTest(size=len(serial), entry_point=index):
+                    if accepted:
+                        self.assertEqual(check(), expected)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'serial number of at most 20 octets'):
+                            check()
+        COMPLETED_WITNESSES.add('signer_serial_length')
+
+    def test_open_attribute_times_require_valid_calendar_and_clock_values(self):
+        signature = self.signatures['direct']
+        oid = ObjectIdentifier('1.2.3.4').dump()
+        cases = (
+            (0x17, b'240229235959Z', None),
+            (0x18, b'20000229000000.5Z', None),
+            (0x17, b'161231235960Z', None),
+            (0x17, b'260231000000Z', 'calendar date'),
+            (0x18, b'20500230000000Z', 'calendar date'),
+            (0x18, b'21000229000000Z', 'calendar date'),
+            (0x17, b'261301000000Z', 'calendar date'),
+            (0x17, b'260228240000Z', 'clock time'),
+            (0x18, b'20500228006000Z', 'clock time'),
+            (0x18, b'20500228000061Z', 'clock time'),
+        )
+        for tag, value, error in cases:
+            attribute = der(0x30, oid + der(0x31, der(tag, value)))
+            unsigned = signed_data(signature, attached=MESSAGE, unsigned_attrs=der(0xa1, attribute))
+            attributes = der(0xa0, b''.join(sorted((self.attribute, attribute))))
+            signed_signature = self.external_signature(attributes)
+            self.assertTrue(self.external_verify(signed_signature, attributes))
+            signed = signed_data(signed_signature, attached=MESSAGE, signed_attrs=attributes)
+            checks = (
+                (lambda: validate_signed_data_format(unsigned, require_signer=True), None),
+                (lambda: self.verify_attached(unsigned), MESSAGE),
+                (lambda: self.apply_adapter(unsigned), self.raw_direct),
+                (lambda: validate_signed_data_format(signed, require_signer=True), None),
+                (lambda: self.verify_attached(signed), MESSAGE),
+            )
+            for index, (check, expected) in enumerate(checks):
+                with self.subTest(time=value, entry_point=index):
+                    if error is None:
+                        self.assertEqual(check(), expected)
+                    else:
+                        with self.assertRaisesRegex(ValueError, error):
+                            check()
+        COMPLETED_WITNESSES.add('attribute_calendar_time')
 
     def test_every_proper_prefix_and_extra_trailing_octet_is_rejected(self):
         envelope = signed_data(self.signatures['direct'], attached=MESSAGE)
@@ -1740,18 +1824,28 @@ class SignedDataReview(SignedDataFixtures):
         late = early + timedelta(days=1)
         expiry = late + timedelta(days=2)
 
-        def certificate(*, points=(), is_ca=False, issuer=authority, ca_cert=False):
+        def certificate(*, points=(), is_ca=False, issuer=authority, ca_cert=False, legacy=False):
             name, serial = (issuer, 1) if ca_cert else (subject, 42)
             builder = (x509.CertificateBuilder().subject_name(name).issuer_name(issuer).serial_number(serial)
                        .public_key(key.public_key()).not_valid_before(early - timedelta(days=1))
-                       .not_valid_after(expiry + timedelta(days=1))
-                       .add_extension(x509.BasicConstraints(is_ca or ca_cert, None), critical=True))
+                       .not_valid_after(expiry + timedelta(days=1)))
+            if not legacy:
+                authority_key = x509.AuthorityKeyIdentifier.from_issuer_public_key(key.public_key())
+                builder = (builder.add_extension(x509.BasicConstraints(is_ca or ca_cert, None), critical=True)
+                           .add_extension(authority_key, critical=False))
             if ca_cert:
                 usage = x509.KeyUsage(False, False, False, False, False, True, True, None, None)
-                builder = builder.add_extension(usage, critical=True)
+                subject_key = x509.SubjectKeyIdentifier.from_public_key(key.public_key())
+                builder = builder.add_extension(usage, critical=True).add_extension(subject_key, critical=False)
             if points:
                 builder = builder.add_extension(x509.CRLDistributionPoints(points), critical=False)
-            return builder.sign(key, hashes.SHA256())
+            certificate = builder.sign(key, hashes.SHA256())
+            if not legacy:
+                return certificate
+            encoded = ASN1Certificate.load(certificate.public_bytes(serialization.Encoding.DER))
+            encoded['tbs_certificate']['version'] = 'v1'
+            encoded['signature_value'] = key.sign(encoded['tbs_certificate'].dump(), padding.PKCS1v15(), hashes.SHA256())
+            return load_der_x509_certificate(encoded.dump())
 
         def crl(*, distribution=None, issuer=authority, number=1, issued=early, expires=expiry,
                 reason=None, certificate_issuer=None, entry_time=early, base=None):
@@ -1858,6 +1952,28 @@ class SignedDataReview(SignedDataFixtures):
                 self.assertEqual(assess_certificate_revocation(target, [snapshot], validation_time=check_time).status, expected)
         COMPLETED_WITNESSES.add('crl_assessment_scope')
 
+    def test_legacy_certificate_requires_an_unrestricted_crl_scope(self):
+        certificate, _, issue, _, _, _, check_time, _ = self.crl_assessment_fixture()
+        encoded_der = serialization.Encoding.DER
+        legacy = certificate(legacy=True)
+        self.assertEqual(legacy.version, x509.Version.v1)
+        issuer = certificate(ca_cert=True).public_bytes(encoded_der)
+        user_only = x509.IssuingDistributionPoint(None, None, True, False, None, False, False)
+        witnesses = (
+            (legacy, issue(distribution=user_only), 'undetermined'),
+            (legacy, issue(), 'unrevoked'),
+            (legacy, issue(reason=ReasonFlags.key_compromise), 'revoked'),
+            (certificate(), issue(distribution=user_only), 'unrevoked'),
+        )
+        for target, snapshot, expected in witnesses:
+            with self.subTest(version=target.version, expected=expected):
+                result = assess_certificate_revocation(target.public_bytes(encoded_der), [snapshot],
+                                                       trust_anchor=issuer, validation_time=check_time)
+                self.assertEqual(result.status, expected)
+                if expected == 'undetermined':
+                    self.assertEqual(result.covered_reasons, frozenset())
+        COMPLETED_WITNESSES.add('crl_legacy_scope')
+
     def test_crl_assessment_selects_latest_authenticated_snapshot_at_validation_time(self):
         certificate, crl, issue, _, _, early, late, expiry = self.crl_assessment_fixture()
         encoded_der = serialization.Encoding.DER
@@ -1953,24 +2069,24 @@ class SignedDataReview(SignedDataFixtures):
                 builder = builder.add_extension(extension, critical=critical)
             return builder.sign(signer_key, hashes.SHA256()).public_bytes(serialization.Encoding.DER)
 
-        def root(*, key=root_key, path_length=1):
+        def root(*, key=root_key, path_length=1, end=None):
             return cert(root_name, key, root_name, key, 1, ca=True, signing=True, crl_sign=True,
-                        path_length=path_length)
+                        path_length=path_length, end=end)
 
-        def intermediate(*, key=root_key, signing=True, extensions=(), subject=ca_name, serial=2):
+        def intermediate(*, key=root_key, signing=True, extensions=(), subject=ca_name, serial=2, end=None):
             return cert(subject, ca_key, root_name, key, serial, ca=True, signing=signing, crl_sign=True,
-                        path_length=0, extensions=extensions)
+                        path_length=0, extensions=extensions, end=end)
 
         def target(*, dns='www.allowed.example', start=None, end=None, extensions=()):
             names = x509.SubjectAlternativeName([x509.DNSName(dns)])
             return cert(leaf_name, other_key, ca_name, ca_key, 3, start=start, end=end,
                         extensions=((names, False), (x509.CRLDistributionPoints([point]), False), *extensions))
 
-        def delegated(*, signer_name=ca_name, signer_key=ca_key, start=None, self_crl_point=False, from_root=False):
+        def delegated(*, signer_name=ca_name, signer_key=ca_key, start=None, end=None, self_crl_point=False, from_root=False):
             if from_root:
                 signer_name, signer_key = root_name, root_key
             extensions = ((x509.CRLDistributionPoints([point]), False),) if self_crl_point else ()
-            certificate = cert(crl_name, crl_key, signer_name, signer_key, 4, crl_sign=True, start=start,
+            certificate = cert(crl_name, crl_key, signer_name, signer_key, 4, crl_sign=True, start=start, end=end,
                                extensions=extensions)
             scope = x509.IssuingDistributionPoint(uri, None, False, False, None, True, False)
             crl = (x509.CertificateRevocationListBuilder().issuer_name(crl_name).last_update(now - timedelta(hours=1))
@@ -2055,6 +2171,45 @@ class SignedDataReview(SignedDataFixtures):
                 with self.assertRaisesRegex(ValueError, 'target certificate path validation failed'):
                     assess_certificate_revocation(encoded, [snapshot], **{**settings, **overrides})
         COMPLETED_WITNESSES.add('revocation_path_constraints')
+
+    def test_path_certificate_validity_includes_both_endpoints(self):
+        root, intermediate, target, delegated, now, _, _, _ = self.revocation_path_fixture()
+        default_path = {'trust_anchor': root(), 'intermediates': [intermediate()]}
+        ordinary = target()
+        snapshot = delegated()
+        exact_end = target(end=now)
+        before, after = now - timedelta(microseconds=1), now + timedelta(microseconds=1)
+        # These two certificates share a subject and key. An expired
+        # candidate must not shadow a valid intermediate with that subject.
+        expired_parent = intermediate(serial=12, end=now - timedelta(seconds=1))
+        current_parent = intermediate(end=now)
+        cases = (
+            ('before notAfter', exact_end, snapshot, before, {}, None),
+            ('at notAfter', exact_end, snapshot, now, {}, None),
+            ('after notAfter', exact_end, snapshot, after, {}, 'target certificate path validation failed: certificate has expired'),
+            ('at notBefore with expiring intermediate', target(start=now), snapshot, now,
+             {'intermediates': [expired_parent, current_parent]}, None),
+            ('only expired intermediate', ordinary, snapshot, now, {'intermediates': [expired_parent]},
+             'target certificate path validation failed'),
+            ('after intermediate expiry', ordinary, snapshot, after, {'intermediates': [current_parent]},
+             'target certificate path validation failed'),
+            ('signer at notAfter', ordinary, delegated(end=now), now, {}, None),
+            ('signer after notAfter', ordinary, delegated(end=now), after, {},
+             'CRL signer certificate path validation failed: certificate has expired'),
+            ('anchor at notAfter', ordinary, snapshot, now, {'trust_anchor': root(end=now)}, None),
+            ('anchor after notAfter', ordinary, snapshot, after, {'trust_anchor': root(end=now)},
+             'trust anchor certificate path validation failed: certificate has expired'),
+        )
+        for label, leaf, crl, time, overrides, error in cases:
+            with self.subTest(case=label):
+                path = {**default_path, **overrides}
+                if error is None:
+                    verdict = assess_certificate_revocation(leaf, [crl], validation_time=time, **path)
+                    self.assertEqual(verdict.status, 'unrevoked')
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        assess_certificate_revocation(leaf, [crl], validation_time=time, **path)
+        COMPLETED_WITNESSES.add('certificate_validity_boundary')
 
     def test_path_revocation_requires_independent_upstream_evidence(self):
         root, intermediate, target, delegated, now, _, _, upstream = self.revocation_path_fixture()

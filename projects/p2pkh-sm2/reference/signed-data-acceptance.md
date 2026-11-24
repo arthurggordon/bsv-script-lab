@@ -16,6 +16,20 @@ and signed-attribute signatures. [GB/T 35275-2026](https://openstd.samr.gov.cn/b
 | PKI assessment | Accepted for the selected trust anchor, applicable caller-supplied CRLs, and the upstream evidence conditions described below. |
 | Chapter 8 encoding decisions | The project accepts the per-OID parameter table and PKCS #9 `messageDigest` identifier below. The acceptance scope is this project profile. Open attribute and extension values depend on the schema for their OID. |
 
+## Regression witnesses from the review of `49175f6`
+
+| Rule | Executable evidence |
+| --- | --- |
+| GB/T 35275-2026 §6.6 and GB/T 20518-2018 §§5.2.3.2 and 5.2.3.4 | Format checking, general verification, and the payment adapter accept a canonical 20-octet serial, including a required sign octet, and reject a 21-octet serial. The same entry points check the type and character count of `commonName`, including a 64-character multibyte control. |
+| X.690 §§11.7–11.8 | Signed and unsigned attributes exercise impossible calendar dates and clock values alongside leap-day, leap-second, and fractional-second controls. The signed controls are signed and verified by OpenSSL. |
+| RFC 5280 §5.2.5 | A user-only CRL contributes zero reason coverage for a valid v1 certificate. An unrestricted CRL can determine the same certificate's status. The user-only CRL can determine a v3 subject's status. |
+| RFC 5280 §4.1.2.5 | Boundary cases cover the target, intermediate, CRL signer, and trust anchor. The issuer expiring at the same instant the target becomes valid is usable. The expired alternative is filtered before path building. |
+
+[GB/T 35275-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=28A18B702BDC318803E598F5E502E2CC) ·
+[GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
+[X.690](https://www.itu.int/rec/T-REC-X.690/en) ·
+[RFC 5280](https://www.rfc-editor.org/rfc/rfc5280)
+
 ## Run the acceptance fixture
 
 Install the pinned [reference dependencies](requirements.txt). Run the finite
@@ -316,10 +330,11 @@ compares other forms using their decoded values.
 ### Pinned certificate paths for revocation assessment
 
 Pass `trust_anchor` and any untrusted DER `intermediates` to
-`assess_certificate_revocation`. OpenSSL validates the target chain and
-the chain for each distinct certificate that authenticated a CRL snapshot,
-at the requested time and with a trust store containing only the explicit
-anchor. The target uses generic path validation and the CRL signer uses
+`assess_certificate_revocation`. The verifier checks `notBefore` and
+`notAfter` inclusively for the endpoints, trust anchor, and every available
+intermediate, then passes only time-valid certificates to OpenSSL. OpenSSL
+validates both paths with a trust store containing only the explicit anchor.
+The target uses generic path validation and the CRL signer uses
 the CRL-signing purpose. Path policy processing starts with `anyPolicy`.
 A caller can also pin an intermediate as its
 trust anchor. Path rejection aborts the assessment.

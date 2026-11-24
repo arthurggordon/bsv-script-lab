@@ -1,6 +1,5 @@
 """OpenSSL path validation against a caller-selected trust anchor."""
 
-from datetime import datetime, timezone
 from pathlib import Path
 import re
 import subprocess
@@ -10,13 +9,27 @@ from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509 import load_der_x509_certificate
 
 
-def _certificate_pem(encoded, role):
+def _load_certificate(encoded, role):
     if not isinstance(encoded, bytes):
         raise ValueError(f'expected a DER {role} certificate')
     try:
-        return load_der_x509_certificate(encoded).public_bytes(Encoding.PEM)
+        return load_der_x509_certificate(encoded)
     except ValueError as error:
         raise ValueError(f'invalid DER {role} certificate') from error
+
+
+def _validity_error(certificate, when):
+    if when < certificate.not_valid_before_utc:
+        return 'certificate is not yet valid'
+    if when > certificate.not_valid_after_utc:
+        return 'certificate has expired'
+    return None
+
+
+def _require_validity(certificate, role, when):
+    error = _validity_error(certificate, when)
+    if error is not None:
+        raise ValueError(f'{role} certificate path validation failed: {error}')
 
 
 def _openssl(command, workspace, *, data=None):
@@ -57,19 +70,25 @@ def _selected_path(stdout, candidate, trust_anchor, subjects, intermediates):
 
 def verify_revocation_paths(target, signers, *, trust_anchor, intermediates, validation_time, identify=False):
     """Validate paths under one anchor and optionally return the selected DER chains."""
-    elapsed = validation_time - datetime(1970, 1, 1, tzinfo=timezone.utc)
-    seconds = elapsed.days * 86400 + elapsed.seconds
-    anchor_pem = _certificate_pem(trust_anchor, 'trust anchor')
-    untrusted = {cert: _certificate_pem(cert, 'intermediate') for cert in intermediates}
+    anchor = _load_certificate(trust_anchor, 'trust anchor')
+    _require_validity(anchor, 'trust anchor', validation_time)
+    anchor_pem = anchor.public_bytes(Encoding.PEM)
+    untrusted = {}
+    for encoded in intermediates:
+        certificate = _load_certificate(encoded, 'intermediate')
+        if _validity_error(certificate, validation_time) is None:
+            untrusted[encoded] = certificate.public_bytes(Encoding.PEM)
     untrusted_pem = b''.join(untrusted.values())
     with TemporaryDirectory(prefix='bsv-x509-revocation-path-') as directory:
         workspace = Path(directory)
         (workspace / 'anchor.pem').write_bytes(anchor_pem)
         # The default PKIX initial policy set is anyPolicy, including when
         # an intermediate requires an explicit policy later in the path.
+        # Every supplied path candidate is time-checked here with inclusive
+        # endpoints. OpenSSL's -attime would exclude the notAfter instant.
         command = ['openssl', 'verify', '-no-CAfile', '-no-CApath', '-no-CAstore',
                    '-trusted', 'anchor.pem', '-partial_chain', '-x509_strict', '-policy_check',
-                   '-policy', '2.5.29.32.0', '-attime', str(seconds)]
+                   '-policy', '2.5.29.32.0', '-no_check_time']
         if untrusted_pem:
             (workspace / 'intermediates.pem').write_bytes(untrusted_pem)
             command += ['-untrusted', 'intermediates.pem']
@@ -81,7 +100,9 @@ def verify_revocation_paths(target, signers, *, trust_anchor, intermediates, val
                         for encoded, pem in {trust_anchor: anchor_pem, **untrusted}.items()}
         selected = {}
         for encoded, role, purpose in certificates:
-            pem = _certificate_pem(encoded, role)
+            certificate = _load_certificate(encoded, role)
+            _require_validity(certificate, role, validation_time)
+            pem = certificate.public_bytes(Encoding.PEM)
             (workspace / 'candidate.pem').write_bytes(pem)
             result = _openssl([*command, '-purpose', purpose, 'candidate.pem'], workspace)
             if result.returncode != 0:
