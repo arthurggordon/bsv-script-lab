@@ -47,14 +47,20 @@ def fixture_signature(key, digest):
     return r.to_bytes(32, "big") + s.to_bytes(32, "big")
 
 
-def check(tx, parents, ix, valid=True):
+def check(tx, parents, ix, valid=True, *, chronicle=True, funding_height=3):
     out = parents[ix].tx_outs[tx.tx_ins[ix].prev_index]
     cookie = Path(os.environ["REGTEST_COOKIE"]).read_text().strip().split(":", 1)
-    flags = sum(1 << b for b in (1, 2, 3, 16, 18, 19, 20, 21))
+    flags = sum(1 << b for b in (1, 2, 3, 16, 18, 19))
+    if chronicle:
+        flags |= 1 << 20
+        if funding_height >= 2:
+            flags |= 1 << 21
     request = dict(tx=tx.serialize().hex(), n=ix, flags=flags, reportflags=True,
-                   txo=dict(lock=out.script_pubkey.raw_serialize().hex(), value=out.amount, height=3))
-    r = requests.post("http://127.0.0.1:18443", auth=tuple(cookie), timeout=30,
+                   txo=dict(lock=out.script_pubkey.raw_serialize().hex(), value=out.amount, height=funding_height))
+    r = requests.post(os.environ.get("REGTEST_URL", "http://127.0.0.1:18443"),
+                      auth=tuple(cookie), timeout=30,
                       json=dict(jsonrpc="1.0", id=1, method="verifyscript", params=[[request], False, 5000]))
+    r.raise_for_status()
     data = r.json()
     if data.get("error"):
         raise AssertionError(data["error"])

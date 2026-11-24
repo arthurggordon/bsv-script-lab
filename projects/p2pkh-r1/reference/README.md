@@ -12,3 +12,5 @@ bash verify.sh
 ```
 
 The regtest script downloads BSV Node 1.2.3 and checks the archive against the release checksum. It runs a local node with no peers and submits only verification RPCs. The software signer in the test uses publicly known test scalars. Integrations should supply a device callback to [wallet.py](./wallet.py). The current release draft awaits physical-device verification, independent review and relay/fee measurements.
+
+The [input acceptance matrix](acceptance.md) runs through the same verification entry point. It records the finite domain, the expected field commitments from the specification, and the coverage check.
