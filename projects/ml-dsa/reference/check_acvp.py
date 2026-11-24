@@ -24,6 +24,13 @@ def script_verdict(key, message, context, signature):
     return True
 
 
+def by_unique_id(records, name):
+    indexed = {record[name]: record for record in records}
+    if len(indexed) != len(records):
+        raise ValueError(f'duplicate ACVP {name}')
+    return indexed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('prompt', type=Path)
@@ -37,28 +44,32 @@ def main():
     if prompts['vsId'] != expected['vsId']:
         raise ValueError('ACVP prompt and expected results use different vector sets')
 
-    expected_by_group = {group['tgId']: group['tests'] for group in expected['testGroups']}
+    prompt_groups = by_unique_id(prompts['testGroups'], 'tgId')
+    expected_groups = by_unique_id(expected['testGroups'], 'tgId')
+    if prompt_groups.keys() != expected_groups.keys():
+        raise ValueError('ACVP prompt and expected group IDs differ')
     count = 0
     mismatches = []
-    for group in prompts['testGroups']:
+    for group_id, group in prompt_groups.items():
         if (group['parameterSet'], group['signatureInterface'], group.get('preHash')) != ('ML-DSA-44', 'external', 'pure'):
             continue
-        verdicts = {case['tcId']: case['testPassed'] for case in expected_by_group[group['tgId']]}
-        if set(verdicts) != {case['tcId'] for case in group['tests']}:
+        cases = by_unique_id(group['tests'], 'tcId')
+        verdicts = by_unique_id(expected_groups[group_id]['tests'], 'tcId')
+        if cases.keys() != verdicts.keys():
             raise ValueError('ACVP prompt and expected case IDs differ')
-        for case in group['tests']:
+        for case_id, case in cases.items():
             key, message, context, signature = (bytes.fromhex(case[field])
                                                 for field in ('pk', 'message', 'context', 'signature'))
             reference = verify(key, message, signature, context=context)
             actual = script_verdict(key, message, context, signature)
-            if (reference, actual) != (verdicts[case['tcId']],) * 2:
-                mismatches.append(case['tcId'])
+            if (reference, actual) != (verdicts[case_id]['testPassed'],) * 2:
+                mismatches.append((group_id, case_id))
             count += 1
     if not count:
         raise ValueError('no external Pure ML-DSA-44 vectors')
     print(f'ML-DSA-44: {count - len(mismatches)}/{count} ACVP results matched in Python and Script')
     if mismatches:
-        print(f'Mismatched case IDs: {mismatches}')
+        print(f'Mismatched (group ID, case ID) pairs: {mismatches}')
     return bool(mismatches)
 
 

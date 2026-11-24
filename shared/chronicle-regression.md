@@ -30,7 +30,7 @@ post-activation cases include unpaired OTDA `SINGLE` with `0x63` and `0xe3`.
 | Project | Evidence on the local merged build |
 |---|---|
 | WOTS+ | 123 complete-input matrix cases and 128 explicit height, version, and sighash cases passed. The 16 existing payment vectors were reproduced. |
-| ML-DSA-44 | 128 height, version, and sighash cases and 64 output or locktime changes passed. The 60 arithmetic, 24 SHAKE, 12 signature-decoding and 22 challenge-sampling cases also passed. |
+| ML-DSA-44 | All 640 declared payment cases matched, with 216 accepted and 424 rejected. The 60 arithmetic, 24 SHAKE, 12 signature-decoding and 22 challenge-sampling cases also passed. |
 | Lamport OTS | 12 tests passed, including the existing complete-input matrix and vectors. |
 | P2PKH-SM2 | Existing reference and complete-input tests passed. |
 | P2PKH-R1 | 4 fixture tests passed with the script-verification call directed to the explicit chain-gang context. |
@@ -41,7 +41,7 @@ Its RPC suite requires a separate node.
 ## ML-DSA-44
 
 The ML-DSA-44 verifier uses the Appendix C sampler budget of 221 bytes.
-The latest payment replay matched all 192 cases on both the merged
+The original payment replay matched all 192 cases on both the merged
 chain-gang build and `bsv-script-lean@1c051eaef1077cc95e5d1618686d5efacc4aa097`
 with Lean 4.34.0.
 The same chain-gang build passed the 15 external Pure ML-DSA-44 NIST ACVP
@@ -52,3 +52,8 @@ Native BSV Node 1.2.3 version `101020300` matched all 192 checks through
 `verifyscript` on a peerless Linux x86-64 regtest. The run completed in 36.890
 seconds with `-maxscriptsizepolicy=100000000`; the default policy rejected the
 926,403-byte lock before script execution.
+
+The expanded payment fixture matched all 640 rows on the pinned chain-gang
+build and native BSV Node 1.2.3. The matrix checks every combination of its
+four declared axes and verifies that no row is repeated or omitted.
+[Payment acceptance and limits](../projects/ml-dsa/reference/payment-acceptance.md)

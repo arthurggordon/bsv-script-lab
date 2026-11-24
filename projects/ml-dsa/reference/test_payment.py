@@ -1,6 +1,7 @@
 """Complete ML-DSA-44 payments across Chronicle activation contexts."""
 
 from dataclasses import replace
+from itertools import product
 import json
 import os
 from pathlib import Path
@@ -8,14 +9,33 @@ import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 
+from fips204 import SIGNATURE_BYTES
 from mldsa import test_only_vector as make_test_vector
 from payment import authorization, sign_spend
 from script import locking_script
 from shared.chain_gang import validate_at_heights
-from shared.transaction import CHRONICLE, SIGHASH_NONE, SIGHASH_SINGLE, SIGHASH_TYPES, Input, Output, Transaction
+from shared.transaction import SIGHASH_TYPES, Input, Output, Transaction
 
 
 TEST_SEED = bytes(range(32))
+TRANSACTION_VERSIONS = (1, 2)
+PAYMENT_MODES = (
+    ('forkid', 'all', (0x41, 0xc1)),
+    ('forkid', 'none', (0x42, 0xc2)),
+    ('forkid', 'single', (0x43, 0xc3)),
+    ('otda', 'all', (0x61, 0xe1)),
+    ('otda', 'none', (0x62, 0xe2)),
+    ('otda', 'single', (0x63, 0xe3)),
+)
+HEIGHT_CONTEXTS = ((2, (1, 1)), (4, (1, 1)), (4, (1, 3)), (4, (3, 1)), (4, (3, 3)))
+VARIANTS = ('original', 'last_output_value', 'locktime', 'signature_byte')
+# Independently listed positive variants in each output-commitment mode.
+VALID_VARIANTS = {
+    ('all', True): {'original'},
+    ('none', True): {'original', 'last_output_value'},
+    ('single', True): {'original'},
+    ('single', False): {'original', 'last_output_value'},
+}
 
 
 class PaymentTests(unittest.TestCase):
@@ -37,8 +57,6 @@ class PaymentTests(unittest.TestCase):
         inputs = tuple(Input(parent.txid_wire(), 0) for parent in self.parents)
         outputs = (Output(500, b'\x51'), Output(10_400, b'\x51')) if paired else (Output(10_900, b'\x51'),)
         tx = Transaction(inputs, outputs, version=version)
-        auth = authorization(tx, 1, 10_000, flag)
-        self.assertEqual(auth.companion, bool(flag & CHRONICLE) and flag & 31 == SIGHASH_SINGLE and not paired)
         return sign_spend(tx, 1, self.funding_raw, self.public_key, self.signer, sighash=flag)
 
     def check_spend(self, spend, expected, height, creation_heights):
@@ -46,7 +64,7 @@ class PaymentTests(unittest.TestCase):
         if expected:
             validate_at_heights(spend, self.parents, **arguments)
         else:
-            with self.assertRaises((RuntimeError, ValueError)):
+            with self.assertRaisesRegex(ValueError, 'Error evaluating the script'):
                 validate_at_heights(spend, self.parents, **arguments)
         if executable := os.environ.get('ML_DSA_BSVS'):
             self.check_lean(executable, spend, self.parents, expected, height, creation_heights)
@@ -97,19 +115,47 @@ class PaymentTests(unittest.TestCase):
         self.assertEqual(result['result'], 'ok' if expected else 'error', result)
 
     def test_sighash_activation_and_output_eras(self):
-        for version in (1, 2):
-            for flag in sorted(SIGHASH_TYPES):
-                for paired in (True, False) if flag & 31 == SIGHASH_SINGLE else (True,):
-                    with self.subTest(version=version, sighash=hex(flag), paired=paired):
-                        spend = self.payment(flag, version, paired)
-                        for height, creation in ((2, (1, 1)), (4, (1, 1)), (4, (1, 3)), (4, (3, 3))):
-                            with self.subTest(height=height, creation=creation):
-                                self.check_spend(spend, height >= 3 or not flag & CHRONICLE, height, creation)
+        self.assertEqual({flag for _, _, flags in PAYMENT_MODES for flag in flags}, SIGHASH_TYPES)
+        modes = tuple((family, outputs, flag, paired)
+                      for family, outputs, flags in PAYMENT_MODES for flag in flags
+                      for paired in ((True, False) if outputs == 'single' else (True,)))
+        shapes = tuple((flag, paired) for _, _, flag, paired in modes)
+        domain = set(product(TRANSACTION_VERSIONS, shapes, HEIGHT_CONTEXTS, VARIANTS))
+        self.assertEqual(len(shapes), 16)
+        self.assertEqual(len(set(shapes)), 16)
+        self.assertEqual(len(domain), 640)
+        visited = set()
+        matched = {True: 0, False: 0}
+        for version, (family, outputs, flag, paired) in product(TRANSACTION_VERSIONS, modes):
+            spend = self.payment(flag, version, paired)
+            auth = authorization(spend, 1, 10_000, flag)
+            self.assertEqual(auth.companion, family == 'otda' and not paired)
+            witness = spend.inputs[1].script
+            # The one-byte selector follows the signature push. Flip one challenge bit.
+            signature = witness[-SIGNATURE_BYTES - 1:-1]
+            self.assertEqual(witness, auth.witness(signature))
+            changed_signature = bytes((signature[0] ^ 1,)) + signature[1:]
+            last = replace(spend.outputs[-1], value=spend.outputs[-1].value - 1)
+            variants = {
+                'original': spend,
+                'last_output_value': replace(spend, outputs=(*spend.outputs[:-1], last)),
+                'locktime': replace(spend, locktime=1),
+                'signature_byte': spend.with_script(1, auth.witness(changed_signature)),
+            }
+            self.assertEqual(set(variants), set(VARIANTS))
+            for (height, creation), (variant, transaction) in product(HEIGHT_CONTEXTS, variants.items()):
+                with self.subTest(version=version, sighash=hex(flag), paired=paired, height=height,
+                                  creation=creation, variant=variant):
+                    case = (version, (flag, paired), (height, creation), variant)
+                    self.assertIn(case, domain)
+                    self.assertNotIn(case, visited)
+                    visited.add(case)
+                    expected = (family == 'forkid' or height >= 3) and variant in VALID_VARIANTS[outputs, paired]
+                    self.check_spend(transaction, expected, height, creation)
+                    matched[expected] += 1
 
-                        last = replace(spend.outputs[-1], value=spend.outputs[-1].value - 1)
-                        changed = replace(spend, outputs=(*spend.outputs[:-1], last))
-                        self.check_spend(changed, not paired or flag & 31 == SIGHASH_NONE, 4, (3, 3))
-                        self.check_spend(replace(spend, locktime=1), False, 4, (3, 3))
+        self.assertEqual(visited, domain)
+        self.assertEqual(matched, {True: 216, False: 424})
 
     def test_invalid_signer_response(self):
         signed = self.payment(0x41, 2, True)

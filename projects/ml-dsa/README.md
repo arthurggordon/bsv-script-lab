@@ -59,15 +59,15 @@ The ACVP inputs used Git blob IDs `22b0803253f7aa24644229acd04c387d260e874a`
 for `prompt.json` and `dba8bcfe5f090503c9390701c11677389752cecd` for
 `expectedResults.json`.
 
-The updated chain-gang build, executable bsv-script-lean evaluator, and native
-BSV Node 1.2.3 each matched all 192 payment checks. The matrix covers transaction versions
-1 and 2, Genesis ForkID and Chronicle OTDA, unpaired `SINGLE`, and mutations.
-The chain-gang primitive suites also passed.
+The payment fixture enumerates 640 unique cases across transaction versions 1
+and 2, Genesis ForkID and Chronicle OTDA, paired and unpaired `SINGLE`, ordered
+prevout eras, and three single changes. Its coverage record gives the exact
+domain and expected decisions. [Payment acceptance](reference/payment-acceptance.md)
+
 Set `ML_DSA_BSVS` to the executable `bsvs` path to repeat the Lean comparison.
-The native replay used `/Bitcoin SV:1.2.3/` version `101020300` in a peerless
-Linux x86-64 regtest and completed in 36.890 seconds. Because the canonical
-lock is 926,403 bytes, the node must start with an explicit script policy limit;
-the shared launchers set `-maxscriptsizepolicy=100000000` alongside the existing
+Because the canonical lock is 926,403 bytes, the native node requires an
+explicit script policy limit for the replay.
+The shared launchers set `-maxscriptsizepolicy=100000000` alongside the existing
 transaction-size and stack-memory limits. An isolated regtest can repeat the
 matrix through `REGTEST_COOKIE` and `REGTEST_URL`.
 [Shared regression evidence](../../shared/chronicle-regression.md)
