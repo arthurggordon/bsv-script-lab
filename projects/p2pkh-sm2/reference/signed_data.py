@@ -150,6 +150,14 @@ def _check_oid(oid):
         raise ValueError('invalid DER attribute OID')
 
 
+def _check_bit_string(value):
+    if not value or value[0] > 7:
+        raise ValueError('invalid DER BIT STRING')
+    unused = value[0]
+    if unused and (len(value) == 1 or value[-1] & ((1 << unused) - 1)):
+        raise ValueError('invalid DER BIT STRING')
+
+
 def _check_open_value(encoded):
     # Walk nested TLVs iteratively. Attribute-specific value syntax remains
     # determined by the OID, outside the payment adapter.
@@ -163,8 +171,18 @@ def _check_open_value(encoded):
                 raise ValueError('invalid DER BOOLEAN')
             if tag == 0x22 or (tag == 0x02 and not _minimal_integer(value)):
                 raise ValueError('invalid DER INTEGER')
+            if tag == 0x03:
+                _check_bit_string(value)
+            if tag == 0x23:
+                raise ValueError('invalid DER BIT STRING')
+            if tag == 0x24:
+                raise ValueError('invalid DER OCTET STRING')
             if tag == 0x25 or (tag == 0x05 and value):
                 raise ValueError('invalid DER NULL')
+            if tag == 0x06:
+                _check_oid(value)
+            if tag == 0x26:
+                raise ValueError('invalid DER attribute OID')
             if tag & 0x20:
                 pending.append(_DER(value))
 
@@ -180,6 +198,11 @@ def _attribute(encoded):
     return oid, values
 
 
+def _check_matching_signature_algorithms(tbs, outer):
+    if tbs.take_encoded(0x30) != outer.take_encoded(0x30):
+        raise ValueError('inner and outer signature algorithm identifiers differ')
+
+
 def _check_certificate(encoded):
     fields = _DER(_DER(encoded).take(0x30))
     tbs = _DER(fields.take(0x30))
@@ -188,12 +211,18 @@ def _check_certificate(encoded):
     serial = tbs.take(0x02)
     if not _minimal_integer(serial) or serial[0] & 0x80 or not any(serial) or len(serial) > 20:
         raise ValueError('expected a positive certificate serial number of at most 20 octets')
+    _check_matching_signature_algorithms(tbs, fields)
     certificate = load_der_x509_certificate(encoded)
     if not certificate.issuer.rdns:
         raise ValueError('empty certificate issuer Name')
 
 
 def _check_crl(encoded):
+    fields = _DER(_DER(encoded).take(0x30))
+    tbs = _DER(fields.take(0x30))
+    if tbs.next_is(0x02):
+        tbs.take(0x02)  # Optional version precedes the signature algorithm.
+    _check_matching_signature_algorithms(tbs, fields)
     crl = load_der_x509_crl(encoded)
     if not crl.issuer.rdns:
         raise ValueError('empty CRL issuer Name')

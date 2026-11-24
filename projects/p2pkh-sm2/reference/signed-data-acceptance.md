@@ -84,6 +84,8 @@ checks the adapter's actual decision.
 | §8 table 3 `signedAttrs` and signing rules after table 3 | OpenSSL verifies independently signed attribute sets with both matching and mismatching `messageDigest`. The general verifier requires exactly one digest attribute with one OCTET STRING matching the SM3 of the original content. Signed fixtures cover missing, duplicated, mistyped, truncated and mismatching digests, a wrong DER signing tag and unsorted attributes. The payment policy rejects attribute signatures. |
 | §8 table 3 `signatureAlgorithm` and `signature` | Crossed algorithm and signature modes. Separate cases exercise missing, non-canonical and out-of-range signature integers in both scalar positions. |
 | §8 table 2 `certificates` and `crls`, table 3 `unsignedAttrs` | Both content modes cross all declared member states. Separate regressions reject empty issuers, zero and overlong certificate serial numbers, CRLs without `nextUpdate`, and malformed BOOLEAN and INTEGER values. Controls include the maximum valid 20-octet certificate serial and canonical signed integers. |
+| GB/T 20518-2018 §§5.2.3.3 and 5.3.3.2, certificate and CRL signature algorithms | Both entry points accept intact OpenSSL metadata. With the original signed body and signature value preserved, they reject replacing the outer algorithm OID or changing only its parameters. |
+| X.690 §§8.6.2, 8.19, 10.2 and 11.2.1, open attribute values | Seventeen encodings exercise BIT STRING padding and primitive tags, OID termination and minimal encoding, and primitive OCTET STRING. Each appears as a direct or nested value and runs through payment `unsignedAttrs` and general `unsignedAttrs` and `signedAttrs`. OpenSSL independently verifies every signed-attribute signature. |
 
 The unittest module adds an executable traceability check after the fixture
 tests. The registry lists each field of §8 tables 2 and 3 and the required
@@ -99,6 +101,12 @@ Each of seven in-memory mutations caused its targeted fixture to fail.
 The mutations bypassed certificate issuer and serial-width checks, CRL
 `nextUpdate`, open-value INTEGER encoding, content-digest comparison,
 second-signer verification and rejection of extra algorithm parameters.
+
+With `cryptography` 43.0.0, the new certificate, CRL and attribute fixtures
+caught 68 incorrect acceptances on the pre-fix implementation. All these
+cases pass with the fix. Six independent mutations removed the matching
+algorithm check or one of the BIT STRING, OBJECT IDENTIFIER and OCTET STRING
+checks, and each mutation failed its targeted assertions.
 
 For signed attributes, the verifier uses the CMS `messageDigest` OID
 1.2.840.113549.1.9.4 and the universal DER SET tag as the signing input.
