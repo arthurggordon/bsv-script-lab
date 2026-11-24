@@ -23,6 +23,7 @@ Generate locking scripts, replay signed spends from reproducible vectors, and co
 | [P2PKH-SM2](projects/p2pkh-sm2/README.md) | An experimental payment template that verifies SM2 and computes SM3 with ZA in Script | [Specification](projects/p2pkh-sm2/docs/spec.en.md) · [Python reference](projects/p2pkh-sm2/reference/README.md) |
 | [Lamport OTS](projects/lamport-ots/README.md) | Hash-based authorization using SHA-256. Each key is for one UTXO and one signature. | [Security model](projects/lamport-ots/docs/security.md) · [Validation record](projects/lamport-ots/docs/validation.md) |
 | [WOTS+](projects/wots-plus/README.md) | SHA-256 hash-chain authorization with a 2,144-byte one-time signature | [Specification](projects/wots-plus/docs/spec.md) · [Verification](projects/wots-plus/README.md#run-the-checks) |
+| [ML-DSA-44](projects/ml-dsa/README.md) | Pure FIPS 204 message verification and a transaction-bound payment template | [Implementation and measurements](projects/ml-dsa/README.md) |
 
 <details>
 <summary><strong>Compare script sizes</strong></summary>
@@ -35,6 +36,7 @@ These are script byte counts for the reference templates using ordinary ForkID `
 | [P2PKH-SM2 v2](projects/p2pkh-sm2/template/layout.json) | 199,777 B | 291 B |
 | [Lamport OTS](projects/lamport-ots/template/measurement.json) | 22,780 B | 8,357 B |
 | [WOTS+](projects/wots-plus/docs/validation.md) | 42,266 B | 2,310 B |
+| [ML-DSA-44](projects/ml-dsa/README.md#script-sizes) | 926,403 B | 2,588 B |
 
 The Lamport locking script includes the public key. An ordinary OTDA unlocking script varies with the transaction data being signed.
 
@@ -44,7 +46,7 @@ The Lamport locking script includes the public key. An ordinary OTDA unlocking s
 
 ## Signature modes
 
-The four reference payment templates support the twelve BIP143 ForkID and Chronicle OTDA combinations below. Select the mode per input. Ordinary payments default to `0x41`.
+The five reference payment templates support the twelve BIP143 ForkID and Chronicle OTDA combinations below. Select the mode per input. Ordinary payments default to `0x41`.
 
 | Output commitment | BIP143 ForkID | ForkID + ANYONECANPAY | Chronicle OTDA | OTDA + ANYONECANPAY |
 |---|---|---|---|---|

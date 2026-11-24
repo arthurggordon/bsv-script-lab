@@ -19,7 +19,7 @@ container run --platform linux/amd64 --cpus 2 --memory 1G --detach \
   -regtest -server -minminingtxfee=0.000005 -rpcport=18443 -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 \
   -datadir=/data -disablewallet -dbcache=64 -listen=0 -connect=0 -dnsseed=0 -discover=0 \
   -genesisactivationheight=1 -chronicleactivationheight=2 -excessiveblocksize=1000000000 \
-  -maxstackmemoryusageconsensus=100000000 -maxtxsizepolicy=100000000 \
+  -maxstackmemoryusageconsensus=100000000 -maxtxsizepolicy=100000000 -maxscriptsizepolicy=100000000 \
   -maxstdtxvalidationduration=1000 -maxnonstdtxvalidationduration=2000 -printtoconsole
 export REGTEST_COOKIE="$data/regtest/.cookie"
 export REGTEST_URL="http://127.0.0.1:$port"
