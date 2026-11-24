@@ -1064,13 +1064,45 @@ def _latest_crl_scopes(snapshots, validation_time):
     return (snapshot for snapshot in latest.values() if validation_time < snapshot.next_update)
 
 
-def assess_certificate_revocation(certificate, snapshots, *, validation_time, trust_anchor=None, intermediates=()):
+def _verify_path_revocation(target, signers, paths, snapshots, trust_anchor, validation_time):
+    parents = {}
+    required = set()
+    for endpoint, path in paths.items():
+        for child, parent in zip(path, path[1:]):
+            if child in parents and parents[child] != parent:
+                raise ValueError('selected certificate paths disagree on revocation evidence issuer')
+            parents[child] = parent
+            if child != target or endpoint != target or child in signers:
+                required.add(child)
+    parents = {child: parent for child, parent in parents.items() if child in required}
+
+    authenticated_evidence = {}
+    for snapshot in snapshots:
+        authenticated_evidence.setdefault(snapshot._issuer_certificate, []).append(snapshot)
+    verified = {trust_anchor}
+    while parents:
+        ready = [child for child, parent in parents.items() if parent in verified]
+        if not ready:
+            raise ValueError('certificate path revocation evidence depends on an unverified issuer')
+        for child in ready:
+            parent = parents.pop(child)
+            verdict = _assess_revocation_status(child, authenticated_evidence.get(parent, ()), validation_time)
+            if verdict.status != 'unrevoked':
+                role = 'CRL signer' if child in signers else 'intermediate'
+                raise ValueError(f'{role} certificate revocation status is {verdict.status}')
+            verified.add(child)
+
+
+def assess_certificate_revocation(certificate, snapshots, *, validation_time, trust_anchor=None, intermediates=(),
+                                  require_chain_revocation=False):
     """Assess a DER certificate against caller-supplied authenticated CRL snapshots.
 
     Supply a DER trust_anchor and any untrusted DER intermediates to verify
-    the target and snapshot signer paths under that anchor. Otherwise the
-    caller establishes the paths. The result is revoked, unrevoked or
-    undetermined for the given timezone-aware time.
+    the target and snapshot signer paths under that anchor. Set
+    require_chain_revocation to require unrevoked status for every used
+    intermediate and CRL signer except the anchor. Each certificate's
+    evidence comes from its validated parent. Otherwise the caller
+    establishes the applicable trust and revocation evidence.
     """
     if not isinstance(validation_time, datetime) or validation_time.utcoffset() is None:
         raise ValueError('CRL validation time must be a timezone-aware datetime')
@@ -1084,10 +1116,20 @@ def assess_certificate_revocation(certificate, snapshots, *, validation_time, tr
                     or snapshot._issuer_certificate is None):
                 raise ValueError('certificate path validation requires CRL snapshots with authenticated signer certificates')
             signers.append(snapshot._issuer_certificate)
-        verify_revocation_paths(certificate, dict.fromkeys(signers), trust_anchor=trust_anchor,
-                                intermediates=intermediates, validation_time=validation_time)
+        signers = dict.fromkeys(signers)
+        paths = verify_revocation_paths(certificate, signers, trust_anchor=trust_anchor,
+                                       intermediates=intermediates, validation_time=validation_time,
+                                       identify=require_chain_revocation)
+        if require_chain_revocation:
+            _verify_path_revocation(certificate, signers, paths, snapshots, trust_anchor, validation_time)
+    elif require_chain_revocation:
+        raise ValueError('certificate path revocation requires an explicit trust anchor')
     elif intermediates:
         raise ValueError('certificate path intermediates require an explicit trust anchor')
+    return _assess_revocation_status(certificate, snapshots, validation_time)
+
+
+def _assess_revocation_status(certificate, snapshots, validation_time):
     target = load_der_x509_certificate(certificate)
     basic = _extension_value(target.extensions, ExtensionOID.BASIC_CONSTRAINTS)
     is_ca = basic is not None and basic.ca
@@ -1236,7 +1278,7 @@ def _check_signed_attributes(encoded, content_digest, attribute_schemas):
     value.done()
 
 
-def _general_fields(envelope, *, x509_profile=False, extension_schemas=None):
+def _general_fields(envelope, *, require_signer=False, x509_profile=False, extension_schemas=None):
     if not isinstance(envelope, bytes):
         raise ValueError('expected a DER SignedData envelope')
     fields = _signed_data(envelope)
@@ -1245,6 +1287,8 @@ def _general_fields(envelope, *, x509_profile=False, extension_schemas=None):
         _digest_algorithm(_DER(algorithm))
     _, content = _content(fields)
     signers = _signer_infos(fields, x509_profile=x509_profile, extension_schemas=extension_schemas)
+    if require_signer and not signers:
+        raise ValueError('SignedData requires at least one signer')
     if signers and not algorithms:
         raise ValueError('expected SM3 in digestAlgorithms')
     return content, signers
@@ -1263,21 +1307,22 @@ def _decode_signers(signers, attribute_schemas, *, content_digest=None):
         yield identifier, attributes, _signer_signature(signer, attribute_schemas)
 
 
-def validate_signed_data_format(envelope, *, attribute_schemas=None, extension_schemas=None):
-    """Check Chapter 8 framing and the implemented X.509 profile rules.
+def validate_signed_data_format(envelope, *, require_signer=False, attribute_schemas=None, extension_schemas=None):
+    """Check SignedData ASN.1 framing and the implemented X.509 profile rules.
 
-    A zero-signer envelope can be structurally valid. Signature verification
-    and PKI trust decisions are separate from this format check.
+    Pass require_signer=True to enforce Chapter 8's minimum of one signer.
+    With the default, the structural check can inspect unsigned metadata.
     Pass extension_schemas to check declared extension types by dotted OID
     and to report a missing schema for any unrecognized extension value.
     """
-    _, signers = _general_fields(envelope, x509_profile=True, extension_schemas=extension_schemas)
+    _, signers = _general_fields(envelope, require_signer=require_signer, x509_profile=True,
+                                  extension_schemas=extension_schemas)
     for _ in _decode_signers(signers, attribute_schemas):
         pass
 
 
 def verify_signed_data(envelope, trusted_signers, *, detached_content=None, attribute_schemas=None,
-                       signed_attrs_encoding='cms-set'):
+                       signed_attrs_encoding='context-field'):
     """Verify one or more v2 signers and return the signed content octets.
 
     trusted_signers maps DER IssuerAndSerialNumber to (SM2 public key, user ID).
@@ -1286,15 +1331,16 @@ def verify_signed_data(envelope, trusted_signers, *, detached_content=None, attr
     Supply attribute_schemas as a mapping from dotted attribute OIDs to
     asn1crypto ASN.1 classes for schema-aware DER checks. Missing types in
     this mode raise MissingAttributeSchema. messageDigest has a built-in type.
-    Select cms-set for the existing CMS signing input or context-field for the
-    original [0] field encoding. A verification call uses a single encoding.
+    Chapter 8 signs the DER encoding of the signedAttrs [0] field. Select
+    cms-set explicitly to verify a CMS-style signature over the universal
+    SET encoding. A verification call uses a single encoding.
     """
     if detached_content is not None and not isinstance(detached_content, bytes):
         raise ValueError('expected detached content octets')
     if signed_attrs_encoding not in ('cms-set', 'context-field'):
         raise ValueError('expected cms-set or context-field for signedAttrs encoding')
 
-    content, signers = _general_fields(envelope)
+    content, signers = _general_fields(envelope, require_signer=True)
     if content is None:
         if detached_content is None:
             raise ValueError('SignedData requires detached content')
@@ -1302,8 +1348,6 @@ def verify_signed_data(envelope, trusted_signers, *, detached_content=None, attr
     elif detached_content is not None and detached_content != content:
         raise ValueError('supplied content differs from encapsulated SignedData content')
 
-    if not signers:
-        raise ValueError('SignedData requires at least one signer')
     content_digest = sm3(content)
     for identifier, attributes, signature in _decode_signers(signers, attribute_schemas,
                                                             content_digest=content_digest):

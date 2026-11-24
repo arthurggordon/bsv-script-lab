@@ -122,6 +122,7 @@ CLAUSE_EVIDENCE = {
     'RFC 5280.6.3.3.f-h.CRLIssuerKeyAndSignature': ('crl_signature_authentication', 'crl_openssl_state'),
     'RFC 5280.6.1.PinnedCertificatePath': ('revocation_path_constraints', 'revocation_sm2_path'),
     'RFC 5280.6.3.3.f.SharedTrustAnchor': ('revocation_common_anchor', 'revocation_sm2_path'),
+    'RFC 5280.6.1.3.a.3.PathCertificateRevocation': ('revocation_path_status',),
     'GB/T 20518-2018.5.3.4.1.CRLIssuerKeyIdentifier': ('crl_signer_identifier',),
     'GB/T 35276-2017.8.1-8.2.CRLSM2SignerID': ('crl_signature_authentication',),
     'RFC 5280.6.3.3.i-k.RevocationState': ('crl_revocation_merge', 'crl_indirect_issuer', 'crl_openssl_state'),
@@ -200,7 +201,7 @@ class SignedDataFixtures(unittest.TestCase):
         digest = cls.openssl('dgst', '-sm3', '-binary', data=MESSAGE)
         cls.attribute = der(0x30, MESSAGE_DIGEST_OID + der(0x31, der(4, digest)))
         cls.attributes = der(0xa0, cls.attribute)
-        cls.attribute_payload = der(0x31, cls.attribute)
+        cls.attribute_payload = cls.attributes
         cls.signatures = {
             'direct': cls.external_signature(MESSAGE),
             'attributes': cls.external_signature(cls.attribute_payload),
@@ -298,6 +299,8 @@ class SignedDataAcceptance(SignedDataFixtures):
         self.assertEqual(encoded[860:863], b'\x02\x01\x01')
         for offset in (31, 987):
             self.assertEqual(encoded[offset:offset + 11], bytes.fromhex('06092a811ccf5501831101'))
+            self.assertEqual(encoded[offset + 11:offset + 13], NULL)
+        self.assertEqual(encoded[1000:1015], bytes.fromhex('300d06092a811ccf5501822d010500'))
         cert, message, signature = encoded[90:854], encoded[62:86], encoded[1017:]
         self.assertEqual(len(message), 24)
         self.assertEqual(len(signature), 70)
@@ -335,7 +338,9 @@ class SignedDataAcceptance(SignedDataFixtures):
                 envelope = signed_data(signature, attached=content, include_signer=False, digest_algorithms=algorithms)
                 validate_signed_data_format(envelope)
                 with self.assertRaisesRegex(ValueError, 'at least one signer'):
-                    verify_signed_data(envelope, {}, detached_content=MESSAGE if content is None else None)
+                    validate_signed_data_format(envelope, require_signer=True)
+                with self.assertRaisesRegex(ValueError, 'at least one signer'):
+                    verify_signed_data(envelope, {})
                 with self.assertRaises(ValueError):
                     self.apply_adapter(envelope)
                 self.assertEqual(envelope[-2:], b'\x31\x00')
@@ -346,8 +351,8 @@ class SignedDataAcceptance(SignedDataFixtures):
 
         two_signers = signed_data(signature, attached=MESSAGE, extra_signers=der(
             0x30, b'\x02\x01\x02' + OTHER_ISSUER_AND_SERIAL + SM3 + SM2 + der(0x04, signature)))
-        validate_signed_data_format(two_signers)
-        validate_signed_data_format(signed_data(signature))  # Detached content is not needed for format.
+        validate_signed_data_format(two_signers, require_signer=True)
+        validate_signed_data_format(signed_data(signature), require_signer=True)
         with self.assertRaisesRegex(ValueError, 'invalid SignedData signature'):
             envelope = signed_data(self.signatures['other_key'], attached=MESSAGE)
             validate_signed_data_format(envelope)
@@ -490,7 +495,7 @@ class SignedDataAcceptance(SignedDataFixtures):
         self.assertTrue(self.external_verify(self.signatures['attributes'], self.attribute_payload))
         wrong_digest = self.openssl('dgst', '-sm3', '-binary', data=OTHER_MESSAGE)
         wrong_attribute = der(0x30, MESSAGE_DIGEST_OID + der(0x31, der(4, wrong_digest)))
-        wrong_payload = der(0x31, wrong_attribute)
+        wrong_payload = der(0xa0, wrong_attribute)
         wrong_signature = self.external_signature(wrong_payload)
         self.assertTrue(self.external_verify(wrong_signature, wrong_payload))
         for attribute, signature in ((self.attribute, self.signatures['attributes']),
@@ -536,7 +541,7 @@ class SignedDataAcceptance(SignedDataFixtures):
 
         digest = self.openssl('dgst', '-sm3', '-binary', data=message)
         attribute = der(0x30, MESSAGE_DIGEST_OID + der(0x31, der(0x04, digest)))
-        attributes_signature = self.external_signature(der(0x31, attribute))
+        attributes_signature = self.external_signature(der(0xa0, attribute))
         sm3_unkeyed = bytes.fromhex('300b06092a811ccf5501831101')
         digests = b''.join(sorted((SM3, sm3_unkeyed)))
         options = {'attached': message, 'signed_attrs': der(0xa0, attribute),
@@ -580,7 +585,7 @@ class SignedDataAcceptance(SignedDataFixtures):
         digest = self.openssl('dgst', '-sm3', '-binary', data=MESSAGE)
         alternate_attr = der(0x30, der(0x06, b'\x2a\x03') + der(0x31, der(0x04, b'other attribute')))
         attrs = b''.join(sorted((self.attribute, alternate_attr)))
-        valid = self.external_signature(der(0x31, attrs))
+        valid = self.external_signature(der(0xa0, attrs))
         for attached in (MESSAGE, None):
             with self.subTest(attached=attached is not None):
                 envelope = signed_data(valid, attached=attached, signed_attrs=der(0xa0, attrs))
@@ -603,13 +608,13 @@ class SignedDataAcceptance(SignedDataFixtures):
             (b''.join(sorted((self.attribute, alternate_attr), reverse=True)), 'out of order'),
         )
         for members, reason in cases:
-            payload = der(0x31, members)
+            payload = der(0xa0, members)
             signature = self.external_signature(payload)
             self.assertTrue(self.external_verify(signature, payload))
             envelope = signed_data(signature, attached=MESSAGE, signed_attrs=der(0xa0, members))
             with self.subTest(attrs=members.hex()), self.assertRaisesRegex(ValueError, reason):
                 verify_signed_data(envelope, self.trusted_signers)
-        wrong_tag = self.external_signature(der(0xa0, attrs))
+        wrong_tag = self.external_signature(der(0x31, attrs))
         with self.assertRaisesRegex(ValueError, 'invalid SignedData signature'):
             envelope = signed_data(wrong_tag, attached=MESSAGE, signed_attrs=der(0xa0, attrs))
             verify_signed_data(envelope, self.trusted_signers)
@@ -812,7 +817,7 @@ class SignedDataAcceptance(SignedDataFixtures):
                 unsigned = signed_data(self.signatures['direct'], attached=MESSAGE,
                                        unsigned_attrs=der(0xa1, attribute))
                 members = b''.join(sorted((self.attribute, attribute)))
-                payload = der(0x31, members)
+                payload = der(0xa0, members)
                 signature = self.external_signature(payload)
                 self.assertTrue(self.external_verify(signature, payload))
                 signed = signed_data(signature, attached=MESSAGE, signed_attrs=der(0xa0, members))
@@ -969,7 +974,7 @@ class SignedDataReview(SignedDataFixtures):
                     cls.record_review_case('attributes', f'{name} {location} unsignedAttrs',
                                            unsigned, conforming=conforming)
                     members = b''.join(sorted((attribute, cls.attribute)))
-                    payload = der(0x31, members)
+                    payload = der(0xa0, members)
                     signature = cls.external_signature(payload)
                     if not cls.external_verify(signature, payload):
                         raise AssertionError('invalid OpenSSL signedAttrs signature in review fixtures')
@@ -1082,7 +1087,7 @@ class SignedDataReview(SignedDataFixtures):
         for label, value, accepted in cases:
             attribute = der(0x30, oid + der(0x31, value))
             members = b''.join(sorted((self.attribute, attribute)))
-            payload = der(0x31, members)
+            payload = der(0xa0, members)
             signature = self.external_signature(payload)
             self.assertTrue(self.external_verify(signature, payload))
             envelopes = (
@@ -1907,29 +1912,47 @@ class SignedDataReview(SignedDataFixtures):
             return builder.sign(signer_key, hashes.SHA256()).public_bytes(serialization.Encoding.DER)
 
         def root(*, key=root_key, path_length=1):
-            return cert(root_name, key, root_name, key, 1, ca=True, signing=True, path_length=path_length)
+            return cert(root_name, key, root_name, key, 1, ca=True, signing=True, crl_sign=True,
+                        path_length=path_length)
 
-        def intermediate(*, key=root_key, signing=True, extensions=()):
-            return cert(ca_name, ca_key, root_name, key, 2, ca=True, signing=signing, path_length=0,
-                        extensions=extensions)
+        def intermediate(*, key=root_key, signing=True, extensions=(), subject=ca_name, serial=2):
+            return cert(subject, ca_key, root_name, key, serial, ca=True, signing=signing, crl_sign=True,
+                        path_length=0, extensions=extensions)
 
         def target(*, dns='www.allowed.example', start=None, end=None, extensions=()):
             names = x509.SubjectAlternativeName([x509.DNSName(dns)])
             return cert(leaf_name, other_key, ca_name, ca_key, 3, start=start, end=end,
                         extensions=((names, False), (x509.CRLDistributionPoints([point]), False), *extensions))
 
-        def delegated(*, signer_name=ca_name, signer_key=ca_key, start=None):
-            certificate = cert(crl_name, crl_key, signer_name, signer_key, 4, crl_sign=True, start=start)
+        def delegated(*, signer_name=ca_name, signer_key=ca_key, start=None, self_crl_point=False, from_root=False):
+            if from_root:
+                signer_name, signer_key = root_name, root_key
+            extensions = ((x509.CRLDistributionPoints([point]), False),) if self_crl_point else ()
+            certificate = cert(crl_name, crl_key, signer_name, signer_key, 4, crl_sign=True, start=start,
+                               extensions=extensions)
             scope = x509.IssuingDistributionPoint(uri, None, False, False, None, True, False)
             crl = (x509.CertificateRevocationListBuilder().issuer_name(crl_name).last_update(now - timedelta(hours=1))
                    .next_update(now + timedelta(hours=1)).add_extension(x509.CRLNumber(1), critical=False)
                    .add_extension(scope, critical=True).sign(crl_key, hashes.SHA256()))
             return load_crl_snapshot(crl.public_bytes(serialization.Encoding.DER), certificate)
 
-        return root, intermediate, target, delegated, now, root_name, other_key
+        def upstream(*, from_root, revoked=None, stale=False):
+            issuer, key, certificate = (root_name, root_key, root()) if from_root else (ca_name, ca_key, intermediate())
+            next_update = now if stale else now + timedelta(hours=1)
+            builder = (x509.CertificateRevocationListBuilder().issuer_name(issuer)
+                       .last_update(now - timedelta(hours=1)).next_update(next_update)
+                       .add_extension(x509.CRLNumber(2), critical=False))
+            if revoked is not None:
+                entry = (x509.RevokedCertificateBuilder().serial_number(revoked)
+                         .revocation_date(now - timedelta(minutes=1)).build())
+                builder = builder.add_revoked_certificate(entry)
+            crl = builder.sign(key, hashes.SHA256()).public_bytes(serialization.Encoding.DER)
+            return load_crl_snapshot(crl, certificate)
+
+        return root, intermediate, target, delegated, now, root_name, other_key, upstream
 
     def test_revocation_paths_require_one_explicit_common_trust_anchor(self):
-        root, intermediate, target, delegated, now, root_name, other_key = self.revocation_path_fixture()
+        root, intermediate, target, delegated, now, root_name, other_key, _ = self.revocation_path_fixture()
         anchor = root()
         other_anchor = root(key=other_key)
         parent = intermediate()
@@ -1962,7 +1985,7 @@ class SignedDataReview(SignedDataFixtures):
         COMPLETED_WITNESSES.add('revocation_common_anchor')
 
     def test_revocation_paths_enforce_certificate_constraints(self):
-        root, intermediate, target, delegated, now, _, _ = self.revocation_path_fixture()
+        root, intermediate, target, delegated, now, _, _, _ = self.revocation_path_fixture()
         anchor, snapshot = root(), delegated()
         allowed_name = x509.NameConstraints([x509.DNSName('.allowed.example')], None)
         constrained = intermediate(extensions=((allowed_name, True),))
@@ -1990,6 +2013,55 @@ class SignedDataReview(SignedDataFixtures):
                 with self.assertRaisesRegex(ValueError, 'target certificate path validation failed'):
                     assess_certificate_revocation(encoded, [snapshot], **{**settings, **overrides})
         COMPLETED_WITNESSES.add('revocation_path_constraints')
+
+    def test_path_revocation_requires_independent_upstream_evidence(self):
+        root, intermediate, target, delegated, now, _, _, upstream = self.revocation_path_fixture()
+        anchor, parent, leaf = root(), intermediate(), target()
+        signer_crl = delegated()
+        root_crl, parent_crl = upstream(from_root=True), upstream(from_root=False)
+        settings = {'validation_time': now, 'trust_anchor': anchor, 'intermediates': [parent],
+                    'require_chain_revocation': True}
+
+        def assess(snapshots, **overrides):
+            return assess_certificate_revocation(leaf, snapshots, **{**settings, **overrides})
+
+        self.assertEqual(assess(iter([signer_crl, parent_crl, root_crl])).status, 'unrevoked')
+        self.assertEqual(assess([signer_crl, parent_crl], trust_anchor=parent, intermediates=()).status, 'unrevoked')
+        root_delegate = delegated(from_root=True)
+        self.assertEqual(assess([root_delegate, root_crl]).status, 'unrevoked')
+        unused_name = Name([NameAttribute(NameOID.COMMON_NAME, 'Unused intermediate')])
+        unused = intermediate(subject=unused_name, serial=11)
+        self.assertEqual(assess([signer_crl, parent_crl, root_crl], intermediates=[unused, parent]).status, 'unrevoked')
+
+        circular = delegated(self_crl_point=True)
+        circular_cert = circular._issuer_certificate
+        self.assertEqual(assess_certificate_revocation(circular_cert, [circular], validation_time=now,
+                                                         trust_anchor=anchor, intermediates=[parent]).status, 'unrevoked')
+        cases = (
+            ('missing intermediate evidence', [signer_crl], {}, 'intermediate certificate revocation status is undetermined'),
+            ('revoked intermediate', [signer_crl, upstream(from_root=True, revoked=2)], {},
+             'intermediate certificate revocation status is revoked'),
+            ('revoked target intermediate with valid separate signer', [root_delegate, upstream(from_root=True, revoked=2)], {},
+             'intermediate certificate revocation status is revoked'),
+            ('missing evidence for an intermediate used as a CRL signer', [signer_crl, parent_crl], {},
+             'CRL signer certificate revocation status is undetermined'),
+            ('missing signing certificate evidence', [signer_crl, root_crl], {},
+             'CRL signer certificate revocation status is undetermined'),
+            ('revoked signing certificate', [signer_crl, upstream(from_root=False, revoked=4), root_crl], {},
+             'CRL signer certificate revocation status is revoked'),
+            ('stale signing certificate evidence', [signer_crl, upstream(from_root=False, stale=True), root_crl], {},
+             'CRL signer certificate revocation status is undetermined'),
+            ('signer depends on itself', [circular, root_crl], {}, 'CRL signer certificate revocation status is undetermined'),
+            ('ambiguous actual intermediate', [signer_crl, parent_crl, root_crl], {'intermediates': [parent, intermediate(serial=10)]},
+             'selected certificate path has an ambiguous intermediate subject'),
+            ('explicit anchor required', [signer_crl, parent_crl, root_crl], {'trust_anchor': None, 'intermediates': ()},
+             'certificate path revocation requires an explicit trust anchor'),
+        )
+        for label, snapshots, overrides, error in cases:
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(ValueError, error):
+                    assess(snapshots, **overrides)
+        COMPLETED_WITNESSES.add('revocation_path_status')
 
     def test_openssl_issued_sm2_certificate_and_crl_share_trust_anchor(self):
         marker = datetime.now(timezone.utc)
@@ -2019,6 +2091,12 @@ class SignedDataReview(SignedDataFixtures):
         verdict = assess_certificate_revocation(leaf, [snapshot], trust_anchor=anchor, intermediates=[intermediate],
                                                   validation_time=marker + timedelta(minutes=1))
         self.assertEqual(verdict.status, 'unrevoked')
+        root_crl = issue(early, 1, common_name=b'SM2 path root', expiry=expires)
+        root_snapshot = load_crl_snapshot(root_crl, anchor, sm2_user_id=USER_ID)
+        strict = assess_certificate_revocation(leaf, [snapshot, root_snapshot], trust_anchor=anchor,
+                                                 intermediates=[intermediate], require_chain_revocation=True,
+                                                 validation_time=marker + timedelta(minutes=1))
+        self.assertEqual(strict.status, 'unrevoked')
         with self.assertRaisesRegex(ValueError, 'target certificate path validation failed'):
             assess_certificate_revocation(leaf, [snapshot], trust_anchor=anchor, validation_time=marker + timedelta(minutes=1))
         COMPLETED_WITNESSES.add('revocation_sm2_path')
@@ -2253,6 +2331,12 @@ class SignedDataReview(SignedDataFixtures):
                     self.assertEqual(verify_signed_data(envelope, self.trusted_signers,
                                                         detached_content=detached, signed_attrs_encoding=encoding),
                                      MESSAGE)
+                    if encoding == 'context-field':
+                        self.assertEqual(verify_signed_data(envelope, self.trusted_signers,
+                                                            detached_content=detached), MESSAGE)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'invalid SignedData signature'):
+                            verify_signed_data(envelope, self.trusted_signers, detached_content=detached)
                     with self.assertRaisesRegex(ValueError, 'invalid SignedData signature'):
                         verify_signed_data(envelope, self.trusted_signers,
                                            detached_content=detached, signed_attrs_encoding=other_encoding)
@@ -2284,6 +2368,13 @@ class SignedDataReview(SignedDataFixtures):
                     with self.subTest(field=field, params=parameters.hex(), entry_point=check.__name__):
                         with self.assertRaises(ValueError):
                             check(envelope)
+        hmac_sm3 = bytes.fromhex('300b06092a811ccf5501831102')
+        for field in ('digest_algorithms', 'signer_digest'):
+            envelope = signed_data(self.signatures['direct'], attached=MESSAGE, **{field: hmac_sm3})
+            for check in (validate_signed_data_format, self.verify_attached, self.apply_adapter):
+                with self.subTest(field=field, entry_point=check.__name__):
+                    with self.assertRaisesRegex(ValueError, 'unexpected SignedData algorithm'):
+                        check(envelope)
         COMPLETED_WITNESSES.add('envelope_parameters')
 
     def check_extension_envelope(self, tag, body, algorithm, error=None):

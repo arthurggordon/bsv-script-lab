@@ -103,8 +103,8 @@ content = verify_signed_data(envelope, {
 
 Omit `detached_content` for an attached envelope. Verification requires at
 least one signer and a valid signature from every listed signer. It handles
-both direct signatures over the content octets and signatures over a DER
-`SignedAttributes` SET. For a signer with attributes, it also checks that the
+direct signatures over the content octets and signatures over the DER
+`signedAttrs` field. For a signer with attributes, it also checks that the
 sole `messageDigest` value matches SM3 of the content octets. The caller
 establishes signer trust and any certificate path or revocation policy.
 
@@ -116,10 +116,11 @@ DER re-encoding. `messageDigest` has a built-in OCTET STRING check.
 unavailable. The configured schema defines the type and any application
 constraints. [Acceptance evidence and remaining scope](signed-data-acceptance.md#additional-chapter-8-evidence)
 
-Use `validate_signed_data_format(envelope, attribute_schemas=...)` for
-Chapter 8 framing and the implemented X.509 extension profile checks.
-This entry point can parse a certificate-only envelope with an empty
-`SignerInfos` set, and it can parse a detached envelope without its content.
+Use `validate_signed_data_format(envelope, require_signer=True,
+attribute_schemas=...)` for Chapter 8 framing, signer count and the
+implemented X.509 extension profile checks. Omit `require_signer` to
+inspect metadata fixtures with an empty `SignerInfos` set. The format
+check can parse a detached envelope without its content.
 It returns normally when the format checks pass. Use `verify_signed_data`
 with authenticated signer keys and any detached content to verify a
 signature and obtain the signed bytes.
@@ -169,8 +170,13 @@ validation time. The certificate signature uses OpenSSL's configured
 algorithm behavior. `sm2_user_id` configures the separate CRL signature
 check. Callers with independently validated paths can omit `trust_anchor`.
 
-The general signature verifier takes `signed_attrs_encoding='cms-set'`
-for the CMS universal SET signing input. Select `'context-field'` to
-verify the original `[0]` field bytes. Each verification uses the selected
-encoding. The acceptance record documents the evidence for both encodings
-and the open normative question. [Encoding evidence](signed-data-acceptance.md#format-and-x509-profile-witnesses)
+Set `require_chain_revocation=True` with the explicit trust anchor to
+require fresh, complete revocation evidence for each selected intermediate
+and CRL signing certificate. Supply a CRL snapshot from each certificate's
+validated parent. The check rejects an ambiguous intermediate path,
+missing coverage, and revoked intermediates or signers.
+
+The general signature verifier uses the original DER `[0]` field bytes
+for GB/T 35275-2026 `signedAttrs`. Select `signed_attrs_encoding='cms-set'`
+explicitly for a CMS-style signature over the universal SET encoding.
+Each verification uses the selected encoding. [Encoding evidence](signed-data-acceptance.md#signed-attributes-and-algorithm-parameters)

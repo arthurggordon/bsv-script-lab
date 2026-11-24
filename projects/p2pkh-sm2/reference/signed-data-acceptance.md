@@ -7,6 +7,15 @@ points enforce outer `SignedData.version = 1` and inner `SignerInfo.version = 2`
 The general verifier requires one or more signers and supports both direct
 and signed-attribute signatures. [GB/T 35275-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=28A18B702BDC318803E598F5E502E2CC)
 
+## Acceptance decisions
+
+| Scope | Disposition |
+| --- | --- |
+| SM2 payment | Accepted for the declared single-signer, direct-signature wallet profile. The payment matrix, isolated version-octet tests, independent provider, and BSV Node replay are the release evidence. |
+| General SignedData | Accepted for the documented project profile. The strict format check and verifier enforce the minimum signer count. The verifier uses the original DER `[0]` view for signed attributes by default and supports a separately selected CMS preimage. The algorithm parameter matrix and attribute OID choices are recorded below. |
+| PKI assessment | Accepted for the selected trust anchor, applicable caller-supplied CRLs, and the upstream evidence conditions described below. |
+| Complete GB/T 35275-2026 Chapter 8 declaration | Open pending the normative per-OID parameter contract and identifier for `messageDigest`. Open attribute and extension values depend on the schema for their OID. |
+
 ## Run the acceptance fixture
 
 Install the pinned [reference dependencies](requirements.txt). Run the finite
@@ -163,8 +172,8 @@ implementation matched every expected outcome.
 | --- | --- | --- |
 | GB/T 20518-2018 §§5.2.2, 5.2.4.1 and 5.3.2 | Both verification entry points exercise certificate v1, v2 and v3, CRL v1 and v2, and version restrictions for unique identifiers and extensions. Certificate, CRL and revoked-entry extensions are checked for unique OIDs, DER DEFAULT omission, exactly one wrapped DER value and the supported extension payload type. | Extension-specific rules are tracked below. |
 | GB/T 35275-2026 §6.9 and §8 | Schema-aware verification checks a declared open type in both attribute fields. An independent signature remains valid when an inner SET OF is unsorted or the value has the wrong type. The ASN.1 schema check rejects both cases and identifies missing schemas explicitly. The format verifier applies the same declared DER type check to extension values. | Private attribute and extension OIDs require their declaring ASN.1 schemas and profile constraints. |
-| GB/T 35275-2026 §8 signer-set grammar | Format validation accepts empty `SignerInfos` with attached, empty-attached and detached content and an empty or populated digest set. A wrong tag fails the format check. Signer verification covers one and multiple signers with mixed direct and attribute signing and requires at least one authenticated signature. | Covered for the declared framing and cardinality cases. |
-| GB/T 35275-2026 §§6.3–6.4 and §8 signed input | The envelope fixture enumerates 32 combinations of the two digest OIDs and absent or NULL parameters at all three algorithm fields. Format validation and both signature entry points execute every row. Independent OpenSSL signatures exercise universal SET and context-specific signedAttrs preimages in both content modes. Matching settings accept each signature, and cross-verification rejects it. | The cited algorithm identifiers and Appendix A.1 give interoperability evidence. Envelope parameter syntax and the signed-attribute tagging convention still need a normative disposition for full conformance. |
+| GB/T 35275-2026 §8 signer-set cardinality | `require_signer=True` and signature verification require at least one signer in all content modes. The default structural diagnostic can inspect the empty ASN.1 set. A wrong tag fails the format check. One and multiple signers are covered. | Covered for the declared framing and cardinality cases. |
+| GB/T 35275-2026 §§6.3–6.4 and §8 signed input | The envelope fixture enumerates 32 combinations of the two digest OIDs and absent or NULL parameters at all three algorithm fields. Format validation and both signature entry points execute every row. Independent OpenSSL fixtures pin `[0]` as the project default and require an explicit CMS setting for universal SET signatures, in both content modes. | The signed-attribute rule follows the field named by §8. The matrix establishes the project's envelope parameter interoperability behavior. A normative per-OID parameter contract remains open. |
 
 The v2 certificate structural test uses `asn1crypto` because
 `cryptography` rejects certificate version v2 at load time. The
@@ -191,8 +200,8 @@ decisions require trusted inputs at the application layer.
 | GB/T 20518-2018 §§5.3.4.6–5.3.4.7 | freshestCRL belongs on complete CRLs, is noncritical, contains at least one distribution point and omits reasons and cRLIssuer. Reason and invalidity date are noncritical, removeFromCRL requires a delta CRL, and certificateIssuer has at least one name. Revoked-entry serial numbers must be positive and fit within 20 DER content octets. |
 | GB/T 20518-2018 §5.2.4.1 | A declared private ASN.1 type is checked for certificates, CRLs and revoked entries. Tests exercise valid types, invalid type and SET OF order, and a distinct missing-schema error. |
 
-Remaining X.509 scope includes other extension-specific rules, issuer
-and subject relationships, and revocation of certificates in the path. The
+Remaining X.509 scope includes other extension-specific rules and
+application-specific issuer and subject relationships. The
 certificate fixture uses independently signed metadata to isolate each
 rejection from the signature bytes.
 The independent OpenSSL replay now runs 103 checks using a separate DER
@@ -323,35 +332,66 @@ trust anchor. Path rejection aborts the assessment.
 
 Path verification uses the local OpenSSL certificate signature behavior.
 The CRL signer ID controls CRL signature verification. The caller supplies
-the available CRLs and verification time. Revocation of intermediate and
-CRL signer certificates requires separate evidence.
+the available CRLs and verification time.
+
+Set `require_chain_revocation=True` to check the status of each used
+intermediate and CRL signer below the explicit trust anchor. The verifier
+associates the chain selected by OpenSSL with the supplied DER certificates.
+If two candidate certificates share a rendered name used in the path,
+the check requires an unambiguous path. Each status check consumes an
+authenticated snapshot issued by the exact validated parent certificate.
+Processing proceeds from the anchor toward the endpoints. This provides
+an acyclic evidence chain and detects missing or stale evidence, revocation,
+and a signer offering its own CRL as evidence of its status. Tests include
+SM2 and RSA paths, an unused intermediate, and a valid CRL signer on a
+different branch from a revoked target intermediate. This strict setting covers direct upstream CRLs
+for path status. The target assessment also supports authenticated indirect
+CRLs under the same anchor.
 [RFC 5280 §6.1](https://www.rfc-editor.org/rfc/rfc5280#section-6.1) ·
 [RFC 5280 §6.3.3](https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3)
 
-The national standard catalog and the published texts were rechecked for
-the two signature-encoding questions. The GB/T 33560 identifier assignments
-and the explicit NULLs in the Appendix A.1 envelope provide OID and
-interoperability evidence. The X.690 rule for IMPLICIT describes how to
-encode the tagged field. RFC 5652 §5.4 separately specifies the universal
-SET tag when producing the CMS signing input. GB/T 35275-2026 §8 names
-the DER encoding of `signedAttrs`, and Appendix A.1 supplies a direct
-signature. The acceptance record keeps the parameter and signing-tag
-questions open pending an authoritative disposition for this standard.
-The published drafting explanation also leaves these choices open. The
-two questions are which parameter encodings each SignedData algorithm OID
-permits, and whether §8 signs the DER field tagged `[0]` or its universal
-SET encoding. The verifier has separate settings for the two preimages,
-and the payment adapter continues to verify direct signatures over content.
+### Signed attributes and algorithm parameters
+
+Section 8 on printed pages 4 and 5 declares the field `signedAttrs [0]
+IMPLICIT SignedAttributes` and names the DER encoding of `signedAttrs`
+as the signing input. X.690 §8.14 gives that field the constructed `[0]`
+tag (`A0`). The verifier uses the field's exact DER bytes on this reading.
+RFC 5652 §5.4 explicitly specifies universal `SET` (`31`)
+for CMS; the verifier supports that preimage when explicitly selected.
+OpenSSL witnesses check both directions of rejection with identical
+attribute members, and pin the default in attached and detached mode.
+Section 8 defines the `messageDigest` value and its SM3 binding. The
+project identifies this attribute with PKCS #9 `1.2.840.113549.1.9.4`,
+as documented for CMS in RFC 5652 §11.2. Sections 6.9 and 8 name the
+attribute and leave its numerical OID unstated.
+
+Section 6.2 points to the optional, algorithm-defined `parameters` field
+of GB/T 20518-2018 §5.2.2. Its SM2 no-parameter statement appears in the
+certificate signature algorithm rules. GB/T 35275-2026 §§6.3–6.4 refer
+to GB/T 33560 for the OIDs. The 2017 and 2026 identifier tables give the
+OID and its meaning. The envelope uses `.401` or `.401.1` for SM3 and
+`.301.1` for SM2-1 under the `1.2.156.10197.1` arc. Tests reject both the
+keyed SM3 (`.401.2`) and SM2-with-SM3 (`.501`) substitutes in their
+respective envelope contexts. GB/T 35275-2026 took effect on 2026-11-01.
+GB/T 33560-2026 takes effect on 2026-12-01.
+Appendix A.1 is informative and its historical envelope contains NULL
+for both unkeyed SM3 identifiers and the SM2-1 identifier. The project
+accepts absent and canonical NULL parameters for the supported envelope
+OIDs and rejects the tested malformed or unrelated parameter types.
+These sources leave a normative per-OID parameter contract unresolved.
 [GB/T 35275-2026](https://std.samr.gov.cn/gb/search/gbDetailedCNF?id=511EBC5968889318E06397BE0A0AFBD5) ·
-[GB/T 35275 drafting explanation](https://std.samr.gov.cn/dcpspTools/gbPlan/download?path=%2Fzxd%2F2024005089%2F20_%E6%A0%87%E5%87%86%E8%B5%B7%E8%8D%89%2F20_DI_2024005089_%E7%BD%91%E7%BB%9C%E5%AE%89%E5%85%A8%E6%8A%80%E6%9C%AF+SM2%E5%AF%86%E7%A0%81%E7%AE%97%E6%B3%95%E5%8A%A0%E5%AF%86%E7%AD%BE%E5%90%8D%E6%B6%88%E6%81%AF.pdf) ·
+[GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
+[GB/T 33560-2017](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=252CF0F72A7BE339A56DEA7D774E8994) ·
 [GB/T 33560-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=9BF813CEEAFB58A19534FF861465D8FD) ·
 [ITU-T X.690 §8.14](https://www.itu.int/rec/T-REC-X.690/en) ·
-[RFC 5652 §5.4](https://www.rfc-editor.org/rfc/rfc5652#section-5.4)
+[RFC 5652 §5.4](https://www.rfc-editor.org/rfc/rfc5652#section-5.4) ·
+[RFC 5652 §11.2](https://www.rfc-editor.org/rfc/rfc5652#section-11.2)
 
 ## Appendix A.1 audit
 
 The published example shows two unkeyed SM3 identifiers
-(`1.2.156.10197.1.401.1`) with DER NULL on printed pages 11 and 16.
+(`1.2.156.10197.1.401.1`) with DER NULL on printed pages 11 and 16 and
+an SM2-1 identifier (`1.2.156.10197.1.301.1`) with DER NULL on page 16.
 The outer version is 1 and the embedded message is 24 bytes. The
 example's inner version is 1 at offset 860 on printed page 15. Section 8
 table 3 gives the normative inner version as 2.
