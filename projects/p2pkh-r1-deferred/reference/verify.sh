@@ -2,4 +2,4 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 export PYTHONPATH="../../..${PYTHONPATH:+:$PYTHONPATH}"
-exec bash ../../../shared/verify_node.sh test_node "$@"
+exec bash ../../../shared/verify_node.sh test_node test_activation_acceptance "$@"
