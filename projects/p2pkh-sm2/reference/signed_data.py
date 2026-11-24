@@ -1,8 +1,8 @@
-"""SignedData profiles for direct SM2 payment signatures."""
+"""SM2 SignedData verification and the direct payment adapter."""
 
 from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
 
-from sm2 import N, USER_ID, be32, parse_public, verify
+from sm2 import N, USER_ID, be32, parse_public, sm3, verify
 
 
 _DATA = bytes.fromhex('2a811ccf550601040201')
@@ -11,6 +11,7 @@ _SM3 = bytes.fromhex('2a811ccf55018311')
 _SM3_UNKEYED = bytes.fromhex('2a811ccf5501831101')
 _SM2_SIGNATURE = bytes.fromhex('2a811ccf5501822d01')
 _SM2_WITH_SM3 = bytes.fromhex('2a811ccf55018375')
+_MESSAGE_DIGEST = bytes.fromhex('2a864886f70d010904')
 
 
 class _DER:
@@ -68,9 +69,22 @@ def _algorithm(fields, *allowed):
     algorithm = _DER(fields.take(0x30))
     if algorithm.take(0x06) not in allowed:
         raise ValueError('unexpected SignedData algorithm')
+    # AlgorithmIdentifier permits an omitted parameters field. The SM3 and
+    # SM2-1 identifiers in GB/T 35275-2026 Appendix A.1 use explicit NULL.
     if algorithm.next_is(0x05) and algorithm.take(0x05):
         raise ValueError('invalid DER NULL parameters')
     algorithm.done()
+
+
+def _digest_algorithm(fields):
+    _algorithm(fields, _SM3, _SM3_UNKEYED)
+
+
+def _minimal_integer(value):
+    if len(value) < 2:
+        return bool(value)
+    return not (value[0] == 0 and value[1] < 0x80
+                or value[0] == 0xff and value[1] >= 0x80)
 
 
 def _signature(der):
@@ -80,8 +94,7 @@ def _signature(der):
     signature = bytearray()
     for _ in range(2):
         integer = values.take(0x02)
-        if (not integer or len(integer) > 33 or integer[0] & 0x80
-                or (len(integer) > 1 and integer[0] == 0 and integer[1] < 128)):
+        if not _minimal_integer(integer) or len(integer) > 33 or integer[0] & 0x80:
             raise ValueError('invalid DER SM2 scalar')
         scalar = int.from_bytes(integer, 'big')
         if not 1 <= scalar < N:
@@ -100,13 +113,14 @@ def _check_issuer_and_serial_number(identifier):
     except ValueError as error:
         raise ValueError(f'invalid DER issuer Name: {error}') from error
     serial = fields.take(0x02)
-    if (not serial or serial[0] & 0x80 or not any(serial)
-            or (len(serial) > 1 and serial[0] == 0 and serial[1] < 128)):
+    if not _minimal_integer(serial) or serial[0] & 0x80 or not any(serial):
         raise ValueError('expected a positive DER certificate serial number')
     fields.done()
 
 
 def _check_issuer_name(encoded):
+    if not encoded:
+        raise ValueError('empty DER issuer Name')
     name = _DER(encoded)
     while name.position < len(name.data):
         rdn = name.take(0x31)
@@ -148,18 +162,44 @@ def _check_open_value(encoded):
             value = fields.take()
             if tag == 0x21 or (tag == 0x01 and value not in (b'\x00', b'\xff')):
                 raise ValueError('invalid DER BOOLEAN')
+            if tag == 0x22 or (tag == 0x02 and not _minimal_integer(value)):
+                raise ValueError('invalid DER INTEGER')
             if tag == 0x25 or (tag == 0x05 and value):
                 raise ValueError('invalid DER NULL')
             if tag & 0x20:
                 pending.append(_DER(value))
 
 
-def _check_attribute(encoded):
+def _attribute(encoded):
     attribute = _DER(_DER(encoded).take(0x30))
-    _check_oid(attribute.take(0x06))
-    for value in _set_members(attribute.take(0x31)):
+    oid = attribute.take(0x06)
+    _check_oid(oid)
+    values = tuple(_set_members(attribute.take(0x31)))
+    for value in values:
         _check_open_value(value)
     attribute.done()
+    return oid, values
+
+
+def _check_certificate(encoded):
+    fields = _DER(_DER(encoded).take(0x30))
+    tbs = _DER(fields.take(0x30))
+    if tbs.next_is(0xa0):
+        tbs.take(0xa0)  # Optional explicit version precedes serialNumber.
+    serial = tbs.take(0x02)
+    if not _minimal_integer(serial) or serial[0] & 0x80 or not any(serial) or len(serial) > 20:
+        raise ValueError('expected a positive certificate serial number of at most 20 octets')
+    certificate = load_der_x509_certificate(encoded)
+    if not certificate.issuer.rdns:
+        raise ValueError('empty certificate issuer Name')
+
+
+def _check_crl(encoded):
+    crl = load_der_x509_crl(encoded)
+    if not crl.issuer.rdns:
+        raise ValueError('empty CRL issuer Name')
+    if crl.next_update_utc is None:
+        raise ValueError('missing CRL nextUpdate')
 
 
 def _check_optional_set(fields, tag, field_name, parse_member, *, nonempty=False):
@@ -175,7 +215,7 @@ def _check_optional_set(fields, tag, field_name, parse_member, *, nonempty=False
         raise ValueError(f'invalid SignedData {field_name}: {error}') from error
 
 
-def _direct_signature(envelope, message, signer_identifier, signer_version):
+def _signed_data(envelope):
     outer = _DER(envelope)
     content_info = _DER(outer.take(0x30))
     outer.done()
@@ -187,40 +227,129 @@ def _direct_signature(envelope, message, signer_identifier, signer_version):
     tagged.done()
     if signed_data.take(0x02) != b'\x01':
         raise ValueError('unsupported SignedData version')
-    algorithms = _DER(signed_data.take(0x31))
-    _algorithm(algorithms, _SM3, _SM3_UNKEYED)
-    algorithms.done()
-    encapsulated = _DER(signed_data.take(0x30))
-    if encapsulated.take(0x06) != _DATA:
-        raise ValueError('expected SM2 data content type')
+    return signed_data
+
+
+def _content(fields):
+    encapsulated = _DER(fields.take(0x30))
+    oid = encapsulated.take(0x06)
+    _check_oid(oid)
+    content = None
     if encapsulated.next_is(0xa0):
         attached = _DER(encapsulated.take(0xa0))
-        if attached.take(0x04) != message:
-            raise ValueError('SignedData content differs from the approved transaction message')
+        content = attached.take(0x04)
         attached.done()
     encapsulated.done()
+    return oid, content
 
-    _check_optional_set(signed_data, 0xa0, 'certificates', load_der_x509_certificate)
-    _check_optional_set(signed_data, 0xa1, 'crls', load_der_x509_crl)
-    signers = _DER(signed_data.take(0x31))
-    signed_data.done()
-    signer = _DER(signers.take(0x30))
-    signers.done()
-    if signer.take(0x02) != bytes((signer_version,)):
-        raise ValueError(f'expected SignerInfo version {signer_version}')
-    if signer.take_encoded(0x30) != signer_identifier:
-        raise ValueError('SignedData signer identifier differs from the configured signer')
-    _algorithm(signer, _SM3, _SM3_UNKEYED)
-    if signer.next_is(0xa0):
-        raise ValueError('signedAttrs signatures cannot authorize the existing payment template')
-    if signer_version == 2:
-        _algorithm(signer, _SM2_SIGNATURE)
-    else:
-        _algorithm(signer, _SM2_SIGNATURE, _SM2_WITH_SM3)
+
+def _signer_infos(fields):
+    _check_optional_set(fields, 0xa0, 'certificates', _check_certificate)
+    _check_optional_set(fields, 0xa1, 'crls', _check_crl)
+    signers = fields.take(0x31)
+    fields.done()
+    return signers
+
+
+def _signer_identifier(signer, version):
+    if signer.take(0x02) != bytes((version,)):
+        raise ValueError(f'expected SignerInfo version {version}')
+    return signer.take_encoded(0x30)
+
+
+def _signer_signature(signer, version):
+    algorithms = (_SM2_SIGNATURE,) if version == 2 else (_SM2_SIGNATURE, _SM2_WITH_SM3)
+    _algorithm(signer, *algorithms)
     signature = _signature(signer.take(0x04))
-    _check_optional_set(signer, 0xa1, 'unsignedAttrs', _check_attribute, nonempty=True)
+    _check_optional_set(signer, 0xa1, 'unsignedAttrs', _attribute, nonempty=True)
     signer.done()
     return signature
+
+
+def _direct_signature(envelope, message, signer_identifier, signer_version):
+    fields = _signed_data(envelope)
+    algorithms = _DER(fields.take(0x31))
+    _digest_algorithm(algorithms)
+    algorithms.done()
+    oid, content = _content(fields)
+    if oid != _DATA:
+        raise ValueError('expected SM2 data content type')
+    if content is not None and content != message:
+        raise ValueError('SignedData content differs from the approved transaction message')
+
+    signers = _DER(_signer_infos(fields))
+    signer = _DER(signers.take(0x30))
+    signers.done()
+    if _signer_identifier(signer, signer_version) != signer_identifier:
+        raise ValueError('SignedData signer identifier differs from the configured signer')
+    _digest_algorithm(signer)
+    if signer.next_is(0xa0):
+        raise ValueError('signedAttrs signatures cannot authorize the existing payment template')
+    return _signer_signature(signer, signer_version)
+
+
+def _signed_attribute_payload(encoded, content_digest):
+    members = _DER(encoded).take(0xa0)
+    digests = []
+    for member in _set_members(members, 0x30):
+        oid, values = _attribute(member)
+        if oid == _MESSAGE_DIGEST:
+            digests.append(values)
+    if len(digests) != 1 or len(digests[0]) != 1:
+        raise ValueError('signedAttrs requires exactly one messageDigest with one value')
+    value = _DER(digests[0][0])
+    if value.take(0x04) != content_digest:
+        raise ValueError('signedAttrs messageDigest differs from SM3 of the content')
+    value.done()
+    # The signing input is the DER encoding of the SignedAttributes SET OF.
+    return b'\x31' + encoded[1:]
+
+
+def verify_signed_data(envelope, trusted_signers, *, detached_content=None):
+    """Verify one or more v2 signers and return the signed content octets.
+
+    trusted_signers maps DER IssuerAndSerialNumber to (SM2 public key, user ID).
+    Use externally authenticated keys. Certificate path and revocation
+    decisions belong to the caller. Raises ValueError on a rejected envelope.
+    """
+    if not isinstance(envelope, bytes):
+        raise ValueError('expected a DER SignedData envelope')
+    if detached_content is not None and not isinstance(detached_content, bytes):
+        raise ValueError('expected detached content octets')
+
+    fields = _signed_data(envelope)
+    algorithms = fields.take(0x31)
+    if not algorithms:
+        raise ValueError('expected SM3 in digestAlgorithms')
+    for algorithm in _set_members(algorithms, 0x30):
+        _digest_algorithm(_DER(algorithm))
+    _, content = _content(fields)
+    if content is None:
+        if detached_content is None:
+            raise ValueError('SignedData requires detached content')
+        content = detached_content
+    elif detached_content is not None and detached_content != content:
+        raise ValueError('supplied content differs from encapsulated SignedData content')
+
+    signers = _signer_infos(fields)
+    if not signers:
+        raise ValueError('SignedData requires at least one signer')
+    content_digest = sm3(content)
+    for encoded in _set_members(signers, 0x30):
+        signer = _DER(_DER(encoded).take(0x30))
+        identifier = _signer_identifier(signer, 2)
+        _check_issuer_and_serial_number(identifier)
+        if identifier not in trusted_signers:
+            raise ValueError('untrusted SignedData signer identifier')
+        key, user_id = trusted_signers[identifier]
+        _digest_algorithm(signer)
+        payload = content
+        if signer.next_is(0xa0):
+            payload = _signed_attribute_payload(signer.take_encoded(0xa0), content_digest)
+        signature = _signer_signature(signer, 2)
+        if not verify(key, payload, signature, user_id):
+            raise ValueError('invalid SignedData signature')
+    return content
 
 
 def signed_data_signer(signer, key, *, signer_identifier, signer_version=2):

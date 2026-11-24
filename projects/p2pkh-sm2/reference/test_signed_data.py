@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from p2pkh_sm2 import locking_script_from_public_key, sign_input
-from signed_data import signed_data_signer
+from signed_data import signed_data_signer, verify_signed_data
 from sm2 import USER_ID, encode_public, fixture_sign, mul, sm3
 from test_sm2 import der, der_signature, fixture
 from test_sighash import chain_check
@@ -116,7 +116,13 @@ class SignedDataTests(unittest.TestCase):
                     self.assertEqual(bytes.fromhex(response['public_key_hex']), key)
                     self.assertEqual(bytes.fromhex(response['signer_identifier_hex']), signer_identifier)
                     self.assertEqual(response['signer_version'], version)
-                    return bytes.fromhex(response['envelope_hex'])
+                    envelope = bytes.fromhex(response['envelope_hex'])
+                    if version == 2:
+                        self.assertEqual(verify_signed_data(
+                            envelope, {signer_identifier: (key, user_id)},
+                            detached_content=message if detached else None,
+                        ), message)
+                    return envelope
 
                 adapter = signed_data_signer(provider, key, signer_identifier=signer_identifier,
                                              signer_version=version)

@@ -8,8 +8,9 @@ import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 
+from cryptography.x509 import load_der_x509_crl
 from ecdsa.util import sigdecode_der
-from signed_data import signed_data_signer
+from signed_data import signed_data_signer, verify_signed_data
 from sm2 import N
 from test_signed_data import (
     DATA_OID, ISSUER_AND_SERIAL, OTHER_ISSUER_AND_SERIAL, SIGNED_DATA_OID,
@@ -23,6 +24,7 @@ OTHER_MESSAGE = bytes(reversed(MESSAGE))
 USER_ID = b'1234567812345678'
 OTHER_ID = b'other user ID'
 NULL = der(0x05, b'')
+MESSAGE_DIGEST_OID = bytes.fromhex('06092a864886f70d010904')
 
 CONFIGURED_VERSIONS = (1, 2)
 SIGNER_VERSIONS = (1, 2, 3)
@@ -39,10 +41,10 @@ TABLE_3 = ('version', 'issuerAndSerialNumber', 'digestAlgorithm', 'signedAttrs',
            'signatureAlgorithm', 'signature', 'unsignedAttrs')
 CLAUSE_EVIDENCE = {
     '5.ContentInfo': ('single_field', 'framing'),
-    '6.1.CertificateRevocationLists': ('metadata',),
-    '6.3.DigestAlgorithmIdentifier': ('single_field',),
-    '6.4.SignatureAlgorithmIdentifier': ('payment_matrix',),
-    '6.5.Certificates': ('metadata',),
+    '6.1.CertificateRevocationLists': ('metadata', 'crl_next_update'),
+    '6.3.DigestAlgorithmIdentifier': ('single_field', 'digest_set'),
+    '6.4.SignatureAlgorithmIdentifier': ('payment_matrix', 'digest_set'),
+    '6.5.Certificates': ('metadata', 'certificate_fields'),
     '6.6.IssuerAndSerialNumber': ('issuer', 'single_field'),
     '6.8.Version': ('payment_matrix',),
     '6.9.Attribute': ('unsigned_attribute',),
@@ -50,20 +52,24 @@ CLAUSE_EVIDENCE = {
     '8.table2.version': ('payment_matrix',),
     '8.table2.digestAlgorithms': ('digest_set', 'single_field'),
     '8.table2.encapContentInfo': ('payment_matrix', 'single_field'),
-    '8.table2.certificates': ('metadata',),
-    '8.table2.crls': ('metadata',),
-    '8.table2.signerInfos': ('signer_count_policy',),
+    '8.table2.certificates': ('metadata', 'certificate_fields'),
+    '8.table2.crls': ('metadata', 'crl_next_update'),
+    '8.table2.signerInfos': ('signer_count_policy', 'verify_all_signers'),
     '8.table3.version': ('payment_matrix',),
     '8.table3.issuerAndSerialNumber': ('issuer', 'single_field'),
     '8.table3.digestAlgorithm': ('single_field',),
-    '8.table3.signedAttrs': ('signed_attrs_policy',),
+    '8.table3.signedAttrs': ('signed_attrs_policy', 'verify_signed_attributes'),
     '8.table3.signatureAlgorithm': ('payment_matrix',),
     '8.table3.signature': ('external_signature', 'der_scalars'),
     '8.table3.unsignedAttrs': ('metadata', 'unsigned_attribute'),
     '8.direct_signature': ('external_signature', 'payment_matrix'),
-    '8.signed_attrs_signature': ('signed_attrs_policy',),
-    '8.messageDigest': (),  # A general SignedData validator has to verify the content digest.
+    '8.signed_attrs_signature': ('signed_attrs_policy', 'verify_signed_attributes'),
+    '8.messageDigest': ('verify_signed_attributes',),
     'A.1.example': ('appendix_a1',),
+    'GB/T 20518-2018.5.2.3.2.SerialNumber': ('certificate_fields',),
+    'GB/T 20518-2018.5.2.3.4.Issuer': ('certificate_fields',),
+    'GB/T 20518-2018.5.3.3.5.nextUpdate': ('crl_next_update',),
+    'X.690.8.3.Integer': ('unsigned_attribute',),
 }
 COMPLETED_WITNESSES = set()
 
@@ -79,9 +85,12 @@ class SignedDataAcceptance(unittest.TestCase):
             public = cls.openssl('pkey', '-in', name + '.pem', '-pubout')
             (cls.directory / (name + '-public.pem')).write_bytes(public)
         cls.key = cls.openssl('pkey', '-pubin', '-in', 'signer-public.pem', '-outform', 'DER')[-65:]
+        other_key = cls.openssl('pkey', '-pubin', '-in', 'other-public.pem', '-outform', 'DER')[-65:]
+        cls.trusted_signers = {ISSUER_AND_SERIAL: (cls.key, USER_ID),
+                               OTHER_ISSUER_AND_SERIAL: (other_key, OTHER_ID)}
 
         digest = cls.openssl('dgst', '-sm3', '-binary', data=MESSAGE)
-        cls.attribute = der(0x30, bytes.fromhex('06092a864886f70d010904') + der(0x31, der(4, digest)))
+        cls.attribute = der(0x30, MESSAGE_DIGEST_OID + der(0x31, der(4, digest)))
         cls.attributes = der(0xa0, cls.attribute)
         cls.attribute_payload = der(0x31, cls.attribute)
         cls.signatures = {
@@ -159,6 +168,12 @@ class SignedDataAcceptance(unittest.TestCase):
         self.assertTrue(self.external_verify(signature, message, key='appendix'))
         key = self.openssl('pkey', '-pubin', '-in', 'appendix-public.pem', '-outform', 'DER')[-65:]
         sid = encoded[863:985]
+        with self.assertRaisesRegex(ValueError, 'expected SignerInfo version 2'):
+            verify_signed_data(encoded, {sid: (key, USER_ID)})
+        # SignerInfo.version is outside the signed payload. Changing only
+        # this octet reuses the published content, certificate and signature.
+        version_2 = encoded[:862] + b'\x02' + encoded[863:]
+        self.assertEqual(verify_signed_data(version_2, {sid: (key, USER_ID)}), message)
         for version in CONFIGURED_VERSIONS:
             adapter = signed_data_signer(lambda *_: encoded, key, signer_identifier=sid, signer_version=version)
             with self.subTest(version=version), self.assertRaisesRegex(ValueError, 'expected the template transaction message'):
@@ -243,9 +258,12 @@ class SignedDataAcceptance(unittest.TestCase):
         for field, form in (('digest_algorithms', sm3_without_parameters),
                             ('signer_digest', sm3_without_parameters),
                             ('algorithm', sm2_without_parameters)):
-            invalid_null = der(0x30, form[2:] + der(0x05, b'\0'))
-            with self.subTest(parameter_field=field), self.assertRaisesRegex(ValueError, 'invalid DER NULL'):
-                self.apply_adapter(signed_data(signature, **{field: invalid_null}))
+            for parameter, reason in ((der(0x05, b'\0'), 'invalid DER NULL'),
+                                      (der(0x02, b'\x01'), 'trailing or unsupported'),
+                                      (NULL + NULL, 'trailing or unsupported')):
+                invalid = der(0x30, form[2:] + parameter)
+                with self.subTest(field=field, parameter=parameter.hex()), self.assertRaisesRegex(ValueError, reason):
+                    self.apply_adapter(signed_data(signature, **{field: invalid}))
         COMPLETED_WITNESSES.add('digest_set')
 
     def test_pinned_issuer_requires_der_rdn_structure(self):
@@ -253,6 +271,7 @@ class SignedDataAcceptance(unittest.TestCase):
         self.assertEqual(self.apply_adapter(signed_data(signature)), self.raw_direct)
         serial = der(0x02, b'\x01')
         cases = (
+            ('empty Name', b''),
             ('NULL instead of an RDN', NULL),
             ('NULL instead of an attribute', der(0x31, NULL)),
             ('empty RDN', der(0x31, b'')),
@@ -298,7 +317,7 @@ class SignedDataAcceptance(unittest.TestCase):
     def test_standard_signed_attributes_and_multiple_signers_are_outside_payment_profile(self):
         self.assertTrue(self.external_verify(self.signatures['attributes'], self.attribute_payload))
         wrong_digest = self.openssl('dgst', '-sm3', '-binary', data=OTHER_MESSAGE)
-        wrong_attribute = der(0x30, bytes.fromhex('06092a864886f70d010904') + der(0x31, der(4, wrong_digest)))
+        wrong_attribute = der(0x30, MESSAGE_DIGEST_OID + der(0x31, der(4, wrong_digest)))
         wrong_payload = der(0x31, wrong_attribute)
         wrong_signature = self.external_signature(wrong_payload)
         self.assertTrue(self.external_verify(wrong_signature, wrong_payload))
@@ -323,6 +342,133 @@ class SignedDataAcceptance(unittest.TestCase):
             self.apply_adapter(two_signers)
         COMPLETED_WITNESSES.add('signer_count_policy')
 
+    def test_verify_all_signers_and_content_modes(self):
+        message = b'Independent SignerInfo entries with an application content type.'
+        content_type = der(0x06, bytes.fromhex('2a0304'))
+        direct = self.external_signature(message)
+        second = self.external_signature(message, key='other', user_id=OTHER_ID)
+        self.assertTrue(self.external_verify(second, message, key='other', user_id=OTHER_ID))
+
+        def second_entry(signature):
+            return der(0x30, b'\x02\x01\x02' + OTHER_ISSUER_AND_SERIAL + SM3 + SM2
+                       + der(0x04, signature))
+
+        for attached in (None, message):
+            for extra in (b'', second_entry(second)):
+                with self.subTest(attached=attached is not None, multiple_signers=bool(extra)):
+                    envelope = signed_data(direct, attached=attached, content_oid=content_type,
+                                           extra_signers=extra)
+                    detached = message if attached is None else None
+                    self.assertEqual(verify_signed_data(envelope, self.trusted_signers,
+                                                        detached_content=detached), message)
+
+        digest = self.openssl('dgst', '-sm3', '-binary', data=message)
+        attribute = der(0x30, MESSAGE_DIGEST_OID + der(0x31, der(0x04, digest)))
+        attributes_signature = self.external_signature(der(0x31, attribute))
+        sm3_unkeyed = bytes.fromhex('300b06092a811ccf5501831101')
+        digests = b''.join(sorted((SM3, sm3_unkeyed)))
+        options = {'attached': message, 'signed_attrs': der(0xa0, attribute),
+                   'extra_signers': second_entry(second), 'digest_algorithms': digests}
+        mixed = signed_data(attributes_signature, **options)
+        self.assertEqual(verify_signed_data(mixed, self.trusted_signers), message)
+        with self.assertRaisesRegex(ValueError, 'out of order'):
+            unsorted_digests = b''.join(sorted((SM3, sm3_unkeyed), reverse=True))
+            verify_signed_data(signed_data(attributes_signature, **(options | {'digest_algorithms': unsorted_digests})),
+                               self.trusted_signers)
+        with self.assertRaisesRegex(ValueError, 'expected SM3 in digestAlgorithms'):
+            verify_signed_data(signed_data(direct, attached=message, digest_algorithms=b''), self.trusted_signers)
+
+        empty_signature = self.external_signature(b'')
+        self.assertEqual(verify_signed_data(signed_data(empty_signature, attached=b''), self.trusted_signers), b'')
+        self.assertEqual(verify_signed_data(signed_data(empty_signature), self.trusted_signers,
+                                            detached_content=b''), b'')
+        first_entry = der(0x30, b'\x02\x01\x02' + ISSUER_AND_SERIAL + SM3 + SM2 + der(0x04, direct))
+        unsorted_signers = b''.join(sorted((first_entry, second_entry(second)), reverse=True))
+        with self.assertRaisesRegex(ValueError, 'out of order'):
+            envelope = signed_data(direct, attached=message, include_signer=False, extra_signers=unsorted_signers)
+            verify_signed_data(envelope, self.trusted_signers)
+
+        wrong_second = self.external_signature(message, key='other', user_id=USER_ID)
+        with self.assertRaisesRegex(ValueError, 'invalid SignedData signature'):
+            verify_signed_data(signed_data(direct, attached=message, extra_signers=second_entry(wrong_second)),
+                               self.trusted_signers)
+        with self.assertRaisesRegex(ValueError, 'untrusted SignedData signer identifier'):
+            envelope = signed_data(direct, attached=message, extra_signers=second_entry(second))
+            verify_signed_data(envelope, {ISSUER_AND_SERIAL: (self.key, USER_ID)})
+        with self.assertRaisesRegex(ValueError, 'at least one signer'):
+            verify_signed_data(signed_data(direct, attached=message, include_signer=False), {})
+        with self.assertRaisesRegex(ValueError, 'requires detached content'):
+            verify_signed_data(signed_data(direct), self.trusted_signers)
+        with self.assertRaisesRegex(ValueError, 'differs from encapsulated'):
+            verify_signed_data(signed_data(direct, attached=message), self.trusted_signers,
+                               detached_content=OTHER_MESSAGE)
+        COMPLETED_WITNESSES.add('verify_all_signers')
+
+    def test_verify_signed_attributes_and_content_digest(self):
+        digest = self.openssl('dgst', '-sm3', '-binary', data=MESSAGE)
+        alternate_attr = der(0x30, der(0x06, b'\x2a\x03') + der(0x31, der(0x04, b'other attribute')))
+        attrs = b''.join(sorted((self.attribute, alternate_attr)))
+        valid = self.external_signature(der(0x31, attrs))
+        for attached in (MESSAGE, None):
+            with self.subTest(attached=attached is not None):
+                envelope = signed_data(valid, attached=attached, signed_attrs=der(0xa0, attrs))
+                self.assertEqual(verify_signed_data(envelope, self.trusted_signers,
+                                                    detached_content=MESSAGE if attached is None else None), MESSAGE)
+
+        def digest_attribute(*values):
+            return der(0x30, MESSAGE_DIGEST_OID + der(0x31, b''.join(sorted(values))))
+
+        wrong_digest = self.openssl('dgst', '-sm3', '-binary', data=OTHER_MESSAGE)
+        cases = (
+            (b'', 'exactly one messageDigest'),
+            (alternate_attr, 'exactly one messageDigest'),
+            (self.attribute * 2, 'exactly one messageDigest'),
+            (digest_attribute(), 'exactly one messageDigest'),
+            (digest_attribute(der(4, digest), der(4, wrong_digest)), 'exactly one messageDigest'),
+            (digest_attribute(der(4, wrong_digest)), 'differs from SM3'),
+            (digest_attribute(der(4, digest[:-1])), 'differs from SM3'),
+            (digest_attribute(der(0x16, b'not an octet string')), 'unexpected or truncated'),
+            (b''.join(sorted((self.attribute, alternate_attr), reverse=True)), 'out of order'),
+        )
+        for members, reason in cases:
+            payload = der(0x31, members)
+            signature = self.external_signature(payload)
+            self.assertTrue(self.external_verify(signature, payload))
+            envelope = signed_data(signature, attached=MESSAGE, signed_attrs=der(0xa0, members))
+            with self.subTest(attrs=members.hex()), self.assertRaisesRegex(ValueError, reason):
+                verify_signed_data(envelope, self.trusted_signers)
+        wrong_tag = self.external_signature(der(0xa0, attrs))
+        with self.assertRaisesRegex(ValueError, 'invalid SignedData signature'):
+            envelope = signed_data(wrong_tag, attached=MESSAGE, signed_attrs=der(0xa0, attrs))
+            verify_signed_data(envelope, self.trusted_signers)
+        with self.assertRaisesRegex(ValueError, 'differs from SM3'):
+            envelope = signed_data(valid, signed_attrs=der(0xa0, attrs))
+            verify_signed_data(envelope, self.trusted_signers, detached_content=OTHER_MESSAGE)
+        COMPLETED_WITNESSES.add('verify_signed_attributes')
+
+    def test_embedded_certificate_issuer_and_serial_boundaries(self):
+        cases = (
+            ('/CN=Test issuer', '1', None),
+            ('/CN=Test issuer', '0x7f' + 'ff' * 19, None),
+            ('/', '1', 'empty certificate issuer'),
+            ('/CN=Test issuer', '0', 'positive certificate serial number'),
+            ('/CN=Test issuer', '0x80' + '00' * 19, 'at most 20 octets'),
+            ('/CN=Test issuer', '0x01' + '00' * 20, 'at most 20 octets'),
+        )
+        for issuer, serial, reason in cases:
+            cert = self.openssl('req', '-new', '-x509', '-key', 'signer.pem', '-sm3', '-subj', issuer,
+                                '-set_serial', serial, '-days', '1', '-outform', 'DER')
+            printed = self.openssl('x509', '-inform', 'DER', '-serial', '-noout', data=cert)
+            self.assertEqual(int(printed.strip().removeprefix(b'serial='), 16), int(serial, 0))
+            envelope = signed_data(self.signatures['direct'], metadata=der(0xa0, cert))
+            with self.subTest(issuer=issuer, serial=serial):
+                if reason is None:
+                    self.assertEqual(self.apply_adapter(envelope), self.raw_direct)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'invalid SignedData certificates: .*' + reason):
+                        self.apply_adapter(envelope)
+        COMPLETED_WITNESSES.add('certificate_fields')
+
     def test_optional_metadata_exhausts_the_declared_domain(self):
         self.openssl('req', '-new', '-x509', '-key', 'signer.pem', '-sm3', '-subj', '/CN=Test issuer',
                      '-set_serial', '1', '-days', '1', '-out', 'issuer.pem')
@@ -335,7 +481,8 @@ class SignedDataAcceptance(unittest.TestCase):
             'default_md = sm3\ndefault_crl_days = 1\n',
             encoding='ascii',
         )
-        crl_pem = self.openssl('ca', '-gencrl', '-config', 'ca.cnf')
+        crl_pem = self.openssl('ca', '-gencrl', '-config', 'ca.cnf',
+                               '-crl_lastupdate', '260101000000Z', '-crl_nextupdate', '260102000000Z')
         crl = self.openssl('crl', '-outform', 'DER', data=crl_pem)
         self.openssl('crl', '-inform', 'DER', '-noout', data=crl)
         unsigned_attribute = der(0x30, bytes.fromhex('06092a864886f70d010902')
@@ -388,6 +535,26 @@ class SignedDataAcceptance(unittest.TestCase):
                 self.apply_adapter(signed_data(self.signatures['direct'], metadata=der(tag, member)))
         COMPLETED_WITNESSES.add('metadata')
 
+        issued = load_der_x509_crl(crl)
+        tbs = issued.tbs_certlist_bytes
+        next_update = der(0x17, b'260102000000Z')
+        self.assertEqual(tbs.count(next_update), 1)
+        # This CRL contains no entries or extensions and uses short DER lengths.
+        self.assertLess(tbs[1], 128)
+        modified_tbs = der(0x30, tbs[2:].replace(next_update, b'', 1))
+        signature = self.external_signature(modified_tbs)
+        self.assertTrue(self.external_verify(signature, modified_tbs))
+        signature_algorithm = bytes.fromhex('300a06082a811ccf55018375')
+        without_next_update = der(0x30, modified_tbs + signature_algorithm + der(0x03, b'\0' + signature))
+        self.assertIsNotNone(issued.next_update_utc)
+        self.assertIsNone(load_der_x509_crl(without_next_update).next_update_utc)
+        for version in CONFIGURED_VERSIONS:
+            envelope = signed_data(self.signatures['direct'], version=version,
+                                   metadata=der(0xa1, without_next_update))
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, 'invalid SignedData crls: missing CRL nextUpdate'):
+                self.apply_adapter(envelope, version)
+        COMPLETED_WITNESSES.add('crl_next_update')
+
     def test_unsigned_attribute_der_structure_and_order(self):
         oid = der(0x06, bytes.fromhex('2a0304'))
         low, high = der(0x04, b'a'), bytes.fromhex('9f1f0162')
@@ -399,6 +566,10 @@ class SignedDataAcceptance(unittest.TestCase):
             return signed_data(self.signatures['direct'], unsigned_attrs=der(0xa1, attributes))
 
         self.assertEqual(self.apply_adapter(envelope(valid)), self.raw_direct)
+        for integer in (b'\x00', b'\x7f', b'\x00\x80', b'\xff', b'\xff\x7f'):
+            node = der(0x30, der(0x02, integer))
+            self.assertEqual(self.apply_adapter(envelope(der(0x30, oid + der(0x31, node)))),
+                             self.raw_direct)
         for boolean in (b'\x00', b'\xff'):
             nested = der(0x30, der(0x01, boolean))
             self.assertEqual(self.apply_adapter(envelope(der(0x30, oid + der(0x31, nested)))),
@@ -417,6 +588,11 @@ class SignedDataAcceptance(unittest.TestCase):
             ('nested non-canonical TRUE', der(0x30, oid + der(0x31, der(0x30, der(0x01, b'\x01')))),
              'invalid DER BOOLEAN'),
         )
+        for integer in (b'', b'\x00\x01', b'\xff\x80'):
+            for node in (der(0x02, integer), der(0x30, der(0x02, integer))):
+                malformed = der(0x30, oid + der(0x31, node))
+                with self.subTest(integer=integer.hex(), node=node.hex()), self.assertRaisesRegex(ValueError, 'invalid DER INTEGER'):
+                    self.apply_adapter(envelope(malformed))
         for name, attributes, reason in cases:
             with self.subTest(rule=name), self.assertRaisesRegex(ValueError, 'invalid SignedData unsignedAttrs: ' + reason):
                 self.apply_adapter(envelope(attributes))
@@ -428,7 +604,7 @@ def check_traceability():
     table_fields = {f'8.table{table}.{field}' for table, fields in ((2, TABLE_2), (3, TABLE_3))
                     for field in fields}
     case.assertEqual({key for key in CLAUSE_EVIDENCE if key.startswith('8.table')}, table_fields)
-    case.assertEqual({key for key, witnesses in CLAUSE_EVIDENCE.items() if not witnesses}, {'8.messageDigest'})
+    case.assertTrue(all(CLAUSE_EVIDENCE.values()))
     case.assertEqual(COMPLETED_WITNESSES, {witness for entries in CLAUSE_EVIDENCE.values() for witness in entries})
 
 

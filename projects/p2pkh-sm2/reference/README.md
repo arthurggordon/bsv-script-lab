@@ -56,6 +56,9 @@ and 3 of GB/T 35275-2026 specify `SignedData.version = 1`,
 signature algorithm. These rules apply by default.
 The payment adapter accepts both the SM3 OID and the unkeyed SM3 OID used
 by Appendix A.1. The default independent Go signer uses unkeyed SM3.
+For these digest identifiers and the signature identifier, the adapter
+accepts omitted parameters or an empty DER NULL. Appendix A.1 uses NULL
+for the unkeyed SM3 and SM2-1 identifiers.
 
 For a legacy direct-signing provider, pass `signer_version=1` when configuring
 the adapter. The outer version stays at 1 and the signer identifier still uses
@@ -66,7 +69,9 @@ Both modes verify one direct SM2 signature over the approved 32-byte payment
 message with the pinned public key and the template's fixed SM2 user ID. If the
 envelope includes content, its bytes must match the payment message. The
 adapter checks the DER structure of embedded certificates, revocation lists
-and unsigned attributes. The configured public key determines payment
+and unsigned attributes. It checks for a nonempty certificate issuer, a
+positive certificate serial number encoded in at most 20 octets and a CRL
+with a nextUpdate. The configured public key determines payment
 authorization. An application that uses PKI establishes certificate trust
 separately.
 
@@ -89,3 +94,25 @@ payment message as signature inputs.
 The [SignedData acceptance fixture](signed-data-acceptance.md) exhausts its
 540-row payment matrix and 256-row optional metadata matrix. It maps both to
 the standard's clauses and states the boundaries of the conformance evidence.
+
+## SignedData signature verification
+
+Use `verify_signed_data` to verify v2 `SignerInfo` entries with trusted keys.
+The mapping keys are complete DER issuer-and-serial identifiers. Each value
+supplies the authenticated SM2 public key and user ID for that signer.
+
+```python
+from signed_data import verify_signed_data
+
+content = verify_signed_data(envelope, {
+    signer_a_id: (signer_a_public_key, signer_a_user_id),
+    signer_b_id: (signer_b_public_key, signer_b_user_id),
+}, detached_content=original_content)
+```
+
+Omit `detached_content` for an attached envelope. Verification requires at
+least one signer and a valid signature from every listed signer. It handles
+both direct signatures over the content octets and signatures over a DER
+`SignedAttributes` SET. For a signer with attributes, it also checks that the
+sole `messageDigest` value matches SM3 of the content octets. The caller
+establishes signer trust and any certificate path or revocation policy.
