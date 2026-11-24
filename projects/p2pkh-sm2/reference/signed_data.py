@@ -9,7 +9,8 @@ from types import MappingProxyType
 from asn1crypto.core import ObjectIdentifier
 from asn1crypto.x509 import Certificate as ASN1Certificate, DirectoryString, Name as ASN1Name
 from cryptography.exceptions import UnsupportedAlgorithm
-from cryptography.x509 import CertificateRevocationList, DirectoryName, Name, ReasonFlags
+from cryptography.x509 import CertificateRevocationList, DirectoryName, DistributionPoint
+from cryptography.x509 import IssuingDistributionPoint, Name, ReasonFlags
 from cryptography.x509 import ExtensionNotFound, UnrecognizedExtension, UnsupportedGeneralNameType
 from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
 from cryptography.x509.oid import CRLEntryExtensionOID, ExtensionOID
@@ -864,6 +865,9 @@ class CRLRevocationSnapshot:
     next_update: datetime
     issuing_distribution_point: bytes | None
     _entries: Mapping[tuple, CRLRevocation] = field(repr=False)
+    issuer: Name | None = None
+    _distribution: IssuingDistributionPoint | None = field(default=None, repr=False)
+    _authenticated: bool = field(default=False, repr=False)
 
     def revocation_for(self, issuer: Name, serial_number: int) -> CRLRevocation | None:
         """Return the entry in this scope, or None when the issuer and serial are absent."""
@@ -918,6 +922,24 @@ def _crl_revocations(revision, issuer_resolver):
     return entries
 
 
+def _crl_snapshot(revision, entries, *, authenticated):
+    crl = revision.crl
+    distribution = _extension_value(crl.extensions, ExtensionOID.ISSUING_DISTRIBUTION_POINT)
+    return CRLRevocationSnapshot(revision.number, revision.issued, crl.next_update_utc,
+                                 revision.scope, MappingProxyType(entries), crl.issuer,
+                                 distribution, authenticated)
+
+
+def load_crl_snapshot(crl, issuer_certificate, *, sm2_user_id=None, issuer_resolver=None, extension_schemas=None):
+    """Authenticate a numbered complete CRL and return its revocation snapshot."""
+    revision = _crl_revision(crl, extension_schemas)
+    if revision.base is not None:
+        raise ValueError('a delta CRL requires a compatible complete CRL')
+    certificate = _crl_signer_certificate(issuer_certificate)
+    _verify_crl_with_certificate(revision.crl, certificate, issuer_certificate, sm2_user_id)
+    return _crl_snapshot(revision, _crl_revocations(revision, issuer_resolver), authenticated=True)
+
+
 def merge_crl_revocations(complete_crl, delta_crl, *, published_crl=None, issuer_resolver=None,
                           issuer_certificate=None, sm2_user_id=None, extension_schemas=None):
     """Return the revocation snapshot for a complete CRL and a compatible delta.
@@ -957,8 +979,138 @@ def merge_crl_revocations(complete_crl, delta_crl, *, published_crl=None, issuer
     if published is not None and entries != _crl_revocations(published, issuer_resolver):
         raise ValueError('merged revocation state differs from the published complete CRL')
 
-    return CRLRevocationSnapshot(delta.number, delta.issued, delta.crl.next_update_utc, delta.scope,
-                                 MappingProxyType(entries))
+    return _crl_snapshot(delta, entries, authenticated=issuer_certificate is not None)
+
+
+_ALL_REVOCATION_REASONS = frozenset(ReasonFlags) - {ReasonFlags.unspecified, ReasonFlags.remove_from_crl}
+
+
+@dataclass(frozen=True)
+class CertificateRevocationAssessment:
+    status: str
+    covered_reasons: frozenset[ReasonFlags]
+    revocation: CRLRevocation | None = None
+
+
+def _distribution_names(point, issuers):
+    if point.full_name is not None:
+        return point.full_name
+    if point.relative_name is not None and len(issuers) == 1:
+        return (DirectoryName(Name([*issuers[0].rdns, point.relative_name])),)
+    return ()
+
+
+def _general_name_matches(left, right):
+    if isinstance(left, DirectoryName) and isinstance(right, DirectoryName):
+        return _issuer_key(left.value) == _issuer_key(right.value)
+    return left == right
+
+
+def _crl_distribution_coverage(snapshot, point, certificate_issuer, *, is_ca):
+    distribution = snapshot._distribution
+    if point.crl_issuer is None:
+        if _issuer_key(snapshot.issuer) != _issuer_key(certificate_issuer):
+            return None
+        issuers = (certificate_issuer,)
+    else:
+        issuers = tuple(name.value for name in point.crl_issuer if isinstance(name, DirectoryName))
+        if (distribution is None or not distribution.indirect_crl
+                or not any(_issuer_key(name) == _issuer_key(snapshot.issuer) for name in issuers)):
+            return None
+
+    reasons = _ALL_REVOCATION_REASONS if point.reasons is None else point.reasons
+    if distribution is None:
+        return reasons
+    if (distribution.only_contains_attribute_certs or (distribution.only_contains_user_certs and is_ca)
+            or (distribution.only_contains_ca_certs and not is_ca)):
+        return None
+    if distribution.full_name is not None or distribution.relative_name is not None:
+        if point.full_name is None and point.relative_name is None:
+            names = point.crl_issuer or ()
+        else:
+            names = _distribution_names(point, issuers)
+        if not any(_general_name_matches(left, right)
+                   for left in _distribution_names(distribution, (snapshot.issuer,)) for right in names):
+            return None
+    only_reasons = distribution.only_some_reasons
+    return reasons if only_reasons is None else reasons & only_reasons
+
+
+def _latest_crl_scopes(snapshots, validation_time):
+    latest = {}
+    conflicts = set()
+    for snapshot in snapshots:
+        if not isinstance(snapshot, CRLRevocationSnapshot) or not snapshot._authenticated:
+            raise ValueError('certificate revocation assessment requires authenticated CRL snapshots')
+        if snapshot.this_update > validation_time:
+            continue
+        key = _issuer_key(snapshot.issuer), snapshot.issuing_distribution_point
+        previous = latest.get(key)
+        if previous is not None:
+            current_rank = snapshot.this_update, snapshot.number
+            previous_rank = previous.this_update, previous.number
+            if current_rank < previous_rank:
+                continue
+            if current_rank == previous_rank:
+                if (snapshot.next_update, snapshot._entries) != (previous.next_update, previous._entries):
+                    conflicts.add(key)
+                continue
+        conflicts.discard(key)
+        latest[key] = snapshot
+    if conflicts:
+        raise ValueError('conflicting authenticated CRL snapshots share issuer, scope, time and number')
+    return (snapshot for snapshot in latest.values() if validation_time < snapshot.next_update)
+
+
+def assess_certificate_revocation(certificate, snapshots, *, validation_time):
+    """Assess a DER certificate against caller-supplied authenticated CRL snapshots.
+
+    The caller establishes the target and CRL signer paths under the same
+    trust anchor and supplies the relevant available CRLs. The result is
+    revoked, unrevoked or undetermined for the given timezone-aware time.
+    """
+    if not isinstance(validation_time, datetime) or validation_time.utcoffset() is None:
+        raise ValueError('CRL validation time must be a timezone-aware datetime')
+    if not isinstance(certificate, bytes):
+        raise ValueError('expected a DER certificate for revocation assessment')
+    target = load_der_x509_certificate(certificate)
+    basic = _extension_value(target.extensions, ExtensionOID.BASIC_CONSTRAINTS)
+    is_ca = basic is not None and basic.ca
+    distribution_points = _extension_value(target.extensions, ExtensionOID.CRL_DISTRIBUTION_POINTS) or ()
+    alternatives = _extension_value(target.extensions, ExtensionOID.ISSUER_ALTERNATIVE_NAME) or ()
+    default_point = DistributionPoint([DirectoryName(target.issuer), *alternatives], None, None, None)
+    covered = set()
+    revocations = []
+    for snapshot in _latest_crl_scopes(snapshots, validation_time):
+        matched = [_crl_distribution_coverage(snapshot, point, target.issuer, is_ca=is_ca)
+                   for point in distribution_points]
+        applicable = [reasons for reasons in matched if reasons is not None]
+        if not applicable:
+            default_coverage = _crl_distribution_coverage(snapshot, default_point, target.issuer, is_ca=is_ca)
+            if default_coverage is not None:
+                applicable.append(default_coverage)
+        reasons = frozenset().union(*applicable)
+        if not reasons:
+            continue
+        entry = snapshot.revocation_for(target.issuer, target.serial_number)
+        if entry is not None:
+            distribution = snapshot._distribution
+            only_reasons = distribution.only_some_reasons if distribution is not None else None
+            if (entry.reason != ReasonFlags.unspecified and only_reasons is not None
+                    and entry.reason not in only_reasons):
+                continue
+            if entry.reason == ReasonFlags.unspecified or entry.reason in reasons:
+                if entry.revocation_date > validation_time:
+                    continue
+                revocations.append(entry)
+        covered.update(reasons)
+    if revocations:
+        revocation = min(revocations, key=lambda entry: (entry.revocation_date, entry.reason.value,
+                                                        entry.invalidity_date is None,
+                                                        entry.invalidity_date or entry.revocation_date))
+        return CertificateRevocationAssessment('revoked', frozenset(covered), revocation)
+    status = 'unrevoked' if covered == _ALL_REVOCATION_REASONS else 'undetermined'
+    return CertificateRevocationAssessment(status, frozenset(covered))
 
 
 def _check_optional_set(fields, tag, field_name, parse_member, *, nonempty=False):

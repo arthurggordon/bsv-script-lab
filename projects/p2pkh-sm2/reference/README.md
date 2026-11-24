@@ -155,7 +155,14 @@ and returns the scoped revocation entry or `None` if absent. For an
 indirect entry with multiple distinct directory names, an
 `issuer_resolver(serial_number, candidates)` can select the authenticated
 issuer name from the supplied candidates. Distribution-point applicability
-and validation time selection remain caller inputs.
+and reason coverage can be evaluated with
+`assess_certificate_revocation(certificate, snapshots, validation_time=...)`.
+Build the snapshots with `load_crl_snapshot(crl, issuer_certificate, ...)`
+for a numbered complete CRL or pass `issuer_certificate` when merging. For
+the supplied timezone-aware time, the assessment returns `revoked`,
+`unrevoked` when the available lists cover every reason, or `undetermined`
+when coverage is insufficient. The caller supplies the available CRLs and
+establishes the target and signing certificate paths under the same anchor.
 
 The general signature verifier takes `signed_attrs_encoding='cms-set'`
 for the CMS universal SET signing input. Select `'context-field'` to

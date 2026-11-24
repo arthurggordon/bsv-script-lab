@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-from itertools import product
+from itertools import permutations, product
 from math import prod
 from pathlib import Path
 import subprocess
@@ -18,7 +18,7 @@ from cryptography.x509.oid import NameOID
 from ecdsa.der import read_length, remove_integer, remove_sequence
 from ecdsa.util import sigdecode_der
 from signed_data import AmbiguousCertificateIssuer, MissingAttributeSchema, MissingExtensionSchema
-from signed_data import merge_crl_revocations
+from signed_data import assess_certificate_revocation, load_crl_snapshot, merge_crl_revocations
 from signed_data import signed_data_signer, validate_crl_pair, validate_crl_series
 from signed_data import validate_signed_data_format, verify_crl_signature, verify_signed_data
 from sm2 import N
@@ -116,6 +116,9 @@ CLAUSE_EVIDENCE = {
     'RFC 5280.5.2.4.LocalCRLMetadata': ('crl_revocation_merge',),
     'RFC 5280.5.3.3.IndirectCRLEntryIssuer': ('crl_indirect_issuer', 'crl_merge_rejections'),
     'RFC 5280.6.3.3.c.AuthorityKeyIdentifier': ('crl_merge_rejections',),
+    'RFC 5280.6.3.3.a.CRLValidationTime': ('crl_assessment_time',),
+    'RFC 5280.6.3.3.b.DistributionPointScope': ('crl_assessment_scope', 'crl_assessment_openssl'),
+    'RFC 5280.6.3.3.d-l.ReasonCoverage': ('crl_assessment_reasons', 'crl_assessment_openssl', 'crl_openssl_state'),
     'RFC 5280.6.3.3.f-h.CRLIssuerKeyAndSignature': ('crl_signature_authentication', 'crl_openssl_state'),
     'GB/T 20518-2018.5.3.4.1.CRLIssuerKeyIdentifier': ('crl_signer_identifier',),
     'GB/T 35276-2017.8.1-8.2.CRLSM2SignerID': ('crl_signature_authentication',),
@@ -1679,6 +1682,203 @@ class SignedDataReview(SignedDataFixtures):
                         merge_crl_revocations(complete, delta, issuer_certificate=certificate, sm2_user_id=USER_ID)
         COMPLETED_WITNESSES.add('crl_signer_identifier')
 
+    def crl_assessment_fixture(self):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        authority = Name([NameAttribute(NameOID.COMMON_NAME, 'Test-only CRL signer')])
+        delegated = Name([NameAttribute(NameOID.COMMON_NAME, 'Test-only delegated signer')])
+        subject = Name([NameAttribute(NameOID.COMMON_NAME, 'Test-only target')])
+        early = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        late = early + timedelta(days=1)
+        expiry = late + timedelta(days=2)
+
+        def certificate(*, points=(), is_ca=False, issuer=authority, ca_cert=False):
+            name, serial = (issuer, 1) if ca_cert else (subject, 42)
+            builder = (x509.CertificateBuilder().subject_name(name).issuer_name(issuer).serial_number(serial)
+                       .public_key(key.public_key()).not_valid_before(early - timedelta(days=1))
+                       .not_valid_after(expiry + timedelta(days=1))
+                       .add_extension(x509.BasicConstraints(is_ca or ca_cert, None), critical=True))
+            if ca_cert:
+                usage = x509.KeyUsage(False, False, False, False, False, True, True, None, None)
+                builder = builder.add_extension(usage, critical=True)
+            if points:
+                builder = builder.add_extension(x509.CRLDistributionPoints(points), critical=False)
+            return builder.sign(key, hashes.SHA256())
+
+        def crl(*, distribution=None, issuer=authority, number=1, issued=early, expires=expiry,
+                reason=None, certificate_issuer=None, entry_time=early, base=None):
+            builder = (x509.CertificateRevocationListBuilder().issuer_name(issuer).last_update(issued).next_update(expires)
+                       .add_extension(x509.CRLNumber(number), critical=False))
+            if distribution is not None:
+                builder = builder.add_extension(distribution, critical=True)
+            if base is not None:
+                builder = builder.add_extension(x509.DeltaCRLIndicator(base), critical=True)
+            if reason is not None:
+                entry = (x509.RevokedCertificateBuilder().serial_number(42).revocation_date(entry_time)
+                         .add_extension(x509.CRLReason(reason), critical=False))
+                if certificate_issuer is not None:
+                    entry = entry.add_extension(x509.CertificateIssuer([x509.DirectoryName(certificate_issuer)]), critical=True)
+                builder = builder.add_revoked_certificate(entry.build())
+            return builder.sign(key, hashes.SHA256())
+
+        def snapshot(*, issuer=authority, **options):
+            return load_crl_snapshot(crl(issuer=issuer, **options).public_bytes(serialization.Encoding.DER),
+                                     certificate(issuer=issuer, ca_cert=True).public_bytes(serialization.Encoding.DER))
+
+        return certificate, crl, snapshot, authority, delegated, early, late, expiry
+
+    def test_crl_assessment_accumulates_reason_intersections(self):
+        certificate, _, issue, _, _, _, check_time, _ = self.crl_assessment_fixture()
+        url = [x509.UniformResourceIdentifier('http://example.invalid/leaf.crl')]
+        hold, key = ReasonFlags.certificate_hold, ReasonFlags.key_compromise
+        all_reasons = frozenset(ReasonFlags) - {ReasonFlags.unspecified, ReasonFlags.remove_from_crl}
+        half, other_half = frozenset({hold, key}), all_reasons - {hold, key}
+        point = x509.DistributionPoint(url, None, None, None)
+        limited_point = x509.DistributionPoint(url, None, half, None)
+        complementary_point = x509.DistributionPoint(url, None, other_half, None)
+        target = certificate(points=[point]).public_bytes(serialization.Encoding.DER)
+        limited_target = certificate(points=[limited_point]).public_bytes(serialization.Encoding.DER)
+        split_target = certificate(points=[limited_point, complementary_point]).public_bytes(serialization.Encoding.DER)
+
+        def distribution(reasons):
+            return x509.IssuingDistributionPoint(url, None, False, False, reasons, False, False)
+
+        first = issue(distribution=distribution(half))
+        second = issue(distribution=distribution(other_half))
+        unpartitioned = issue(distribution=distribution(None))
+        revoked = issue(distribution=distribution(half), reason=hold)
+        unspecified = issue(distribution=distribution(half), reason=ReasonFlags.unspecified)
+        unrelated_reason = issue(distribution=distribution(other_half), reason=ReasonFlags.affiliation_changed)
+        inconsistent_entry = issue(distribution=distribution(half), reason=ReasonFlags.affiliation_changed)
+        cases = (
+            (target, (), 'undetermined', frozenset(), None),
+            (target, (first,), 'undetermined', half, None),
+            (target, (second, first), 'unrevoked', all_reasons, None),
+            (limited_target, (unpartitioned,), 'undetermined', half, None),
+            (limited_target, (second,), 'undetermined', frozenset(), None),
+            (limited_target, (unrelated_reason,), 'undetermined', frozenset(), None),
+            (split_target, (unpartitioned,), 'unrevoked', all_reasons, None),
+            (target, (inconsistent_entry, second), 'undetermined', other_half, None),
+            (target, (revoked,), 'revoked', half, hold),
+            (target, (unspecified,), 'revoked', half, ReasonFlags.unspecified),
+        )
+        for index, (encoded, snapshots, status, reasons, reason) in enumerate(cases):
+            with self.subTest(case=index):
+                result = assess_certificate_revocation(encoded, snapshots, validation_time=check_time)
+                self.assertEqual((result.status, result.covered_reasons), (status, reasons))
+                self.assertEqual(result.revocation.reason if result.revocation is not None else None, reason)
+        COMPLETED_WITNESSES.add('crl_assessment_reasons')
+
+    def test_crl_assessment_matches_direct_indirect_and_relative_scope(self):
+        certificate, _, issue, authority, delegated, _, check_time, _ = self.crl_assessment_fixture()
+        location = [x509.UniformResourceIdentifier('http://example.invalid/correct.crl')]
+        other = [x509.UniformResourceIdentifier('http://example.invalid/wrong.crl')]
+        rdn = x509.RelativeDistinguishedName([NameAttribute(NameOID.COMMON_NAME, 'relative point')])
+        expanded = [x509.DirectoryName(Name([*authority.rdns, rdn]))]
+        direct = x509.DistributionPoint(location, None, None, None)
+        indirect = x509.DistributionPoint(location, None, None, [x509.DirectoryName(delegated)])
+        issuer_only = x509.DistributionPoint(None, None, None, [x509.DirectoryName(delegated)])
+        relative = x509.DistributionPoint(None, rdn, None, None)
+        missing = x509.DistributionPoint(other, None, None, None)
+
+        def distribution(names, *, relative_name=None, indirect_crl=False, only_user=False, only_ca=False, only_attr=False):
+            return x509.IssuingDistributionPoint(names, relative_name, only_user, only_ca, None, indirect_crl, only_attr)
+
+        indirect_list = issue(issuer=delegated, distribution=distribution(location, indirect_crl=True),
+                              reason=ReasonFlags.key_compromise, certificate_issuer=authority)
+        cases = (
+            ((), issue(), False, 'unrevoked'),
+            ((direct,), issue(distribution=distribution(location)), False, 'unrevoked'),
+            ((missing,), issue(distribution=distribution(location)), False, 'undetermined'),
+            ((direct,), issue(distribution=distribution([x509.DirectoryName(authority)])), False, 'unrevoked'),
+            ((relative,), issue(distribution=distribution(expanded)), False, 'unrevoked'),
+            ((x509.DistributionPoint(expanded, None, None, None),),
+             issue(distribution=distribution(None, relative_name=rdn)), False, 'unrevoked'),
+            ((indirect,), indirect_list, False, 'revoked'),
+            ((direct,), indirect_list, False, 'undetermined'),
+            ((indirect,), issue(issuer=delegated, distribution=distribution(location)), False, 'undetermined'),
+            ((issuer_only,), issue(issuer=delegated, distribution=distribution([x509.DirectoryName(delegated)], indirect_crl=True)),
+             False, 'unrevoked'),
+            ((direct,), issue(distribution=distribution(location, only_user=True)), True, 'undetermined'),
+            ((direct,), issue(distribution=distribution(location, only_ca=True)), True, 'unrevoked'),
+            ((direct,), issue(distribution=distribution(location, only_ca=True)), False, 'undetermined'),
+            ((direct,), issue(distribution=distribution(location, only_attr=True)), False, 'undetermined'),
+        )
+        for index, (points, snapshot, is_ca, expected) in enumerate(cases):
+            with self.subTest(case=index):
+                target = certificate(points=points, is_ca=is_ca).public_bytes(serialization.Encoding.DER)
+                self.assertEqual(assess_certificate_revocation(target, [snapshot], validation_time=check_time).status, expected)
+        COMPLETED_WITNESSES.add('crl_assessment_scope')
+
+    def test_crl_assessment_selects_latest_authenticated_snapshot_at_validation_time(self):
+        certificate, crl, issue, _, _, early, late, expiry = self.crl_assessment_fixture()
+        encoded_der = serialization.Encoding.DER
+        target = certificate().public_bytes(encoded_der)
+        held = issue(reason=ReasonFlags.certificate_hold)
+        released = issue(number=2, issued=late, expires=late + timedelta(hours=1))
+        future_entry = issue(reason=ReasonFlags.key_compromise, entry_time=late)
+        cases = (
+            ((held,), early - timedelta(seconds=1), 'undetermined'),
+            ((held,), early, 'revoked'),
+            ((held,), expiry, 'undetermined'),
+            ((held, released), late - timedelta(seconds=1), 'revoked'),
+            ((held, released), late, 'unrevoked'),
+            ((released, held), late, 'unrevoked'),
+            ((held, released), late + timedelta(hours=1), 'undetermined'),
+            ((future_entry,), early, 'undetermined'),
+            ((future_entry,), late, 'revoked'),
+        )
+        for index, (snapshots, check_time, status) in enumerate(cases):
+            with self.subTest(case=index):
+                self.assertEqual(assess_certificate_revocation(target, snapshots, validation_time=check_time).status, status)
+        conflicting = issue()
+        with self.assertRaisesRegex(ValueError, 'conflicting authenticated CRL snapshots'):
+            assess_certificate_revocation(target, [held, conflicting], validation_time=early)
+        for order in permutations((held, conflicting, released)):
+            self.assertEqual(assess_certificate_revocation(target, order, validation_time=late).status, 'unrevoked')
+
+        base = crl().public_bytes(encoded_der)
+        delta = crl(number=2, issued=late, base=1).public_bytes(encoded_der)
+        with self.assertRaisesRegex(ValueError, 'requires authenticated CRL snapshots'):
+            assess_certificate_revocation(target, [merge_crl_revocations(base, delta)], validation_time=late)
+        with self.assertRaisesRegex(ValueError, 'a delta CRL requires a compatible complete CRL'):
+            load_crl_snapshot(delta, certificate(ca_cert=True).public_bytes(encoded_der))
+        with self.assertRaisesRegex(ValueError, 'timezone-aware'):
+            assess_certificate_revocation(target, [held], validation_time=early.replace(tzinfo=None))
+        COMPLETED_WITNESSES.add('crl_assessment_time')
+
+    def test_openssl_independently_agrees_on_distribution_scope_and_freshness(self):
+        certificate, crl, _, _, _, early, check_time, expiry = self.crl_assessment_fixture()
+        uri = [x509.UniformResourceIdentifier('http://example.invalid/matching.crl')]
+        other = [x509.UniformResourceIdentifier('http://example.invalid/other.crl')]
+        point = x509.DistributionPoint(uri, None, None, None)
+        scope = x509.IssuingDistributionPoint(uri, None, True, False, None, False, False)
+        mismatched = x509.IssuingDistributionPoint(other, None, True, False, None, False, False)
+        pem, encoded_der = serialization.Encoding.PEM, serialization.Encoding.DER
+        target = certificate(points=[point])
+        issuer = certificate(ca_cert=True)
+        (self.directory / 'scope-ca.pem').write_bytes(issuer.public_bytes(pem))
+        (self.directory / 'scope-leaf.pem').write_bytes(target.public_bytes(pem))
+        cases = (
+            (crl(distribution=scope), check_time, 'unrevoked', b''),
+            (crl(distribution=scope, reason=ReasonFlags.certificate_hold), check_time, 'revoked', b'certificate revoked'),
+            (crl(distribution=mismatched), check_time, 'undetermined', b'different CRL scope'),
+            (crl(distribution=scope), early - timedelta(hours=1), 'undetermined', b'CRL is not yet valid'),
+            (crl(distribution=scope), expiry + timedelta(hours=1), 'undetermined', b'CRL has expired'),
+        )
+        for candidate, when, expected, error in cases:
+            with self.subTest(expected=expected, error=error):
+                (self.directory / 'scope.crl').write_bytes(candidate.public_bytes(pem))
+                snapshot = load_crl_snapshot(candidate.public_bytes(encoded_der), issuer.public_bytes(encoded_der))
+                result = assess_certificate_revocation(target.public_bytes(encoded_der), [snapshot], validation_time=when)
+                checked = subprocess.run(['openssl', 'verify', '-crl_check', '-extended_crl', '-attime', str(int(when.timestamp())),
+                                          '-CAfile', 'scope-ca.pem', '-CRLfile', 'scope.crl', 'scope-leaf.pem'],
+                                         cwd=self.directory, capture_output=True, timeout=15)
+                self.assertEqual(result.status, expected)
+                self.assertEqual(checked.returncode == 0, expected == 'unrevoked', checked.stderr)
+                if error:
+                    self.assertIn(error, checked.stderr)
+        COMPLETED_WITNESSES.add('crl_assessment_openssl')
+
     def test_openssl_independently_agrees_on_certificate_revocation(self):
         early = datetime(2025, 1, 1, tzinfo=timezone.utc)
         late = early + timedelta(days=1)
@@ -1737,9 +1937,13 @@ class SignedDataReview(SignedDataFixtures):
                  (105, False, None), (106, False, None))
         for serial, previously_revoked, expected_reason in cases:
             subject = Name([NameAttribute(NameOID.COMMON_NAME, f'Test-only leaf {serial}')])
-            (self.directory / 'leaf.pem').write_bytes(certificate(subject, serial).public_bytes(pem))
+            leaf = certificate(subject, serial)
+            (self.directory / 'leaf.pem').write_bytes(leaf.public_bytes(pem))
             recovered = snapshot.revocation_for(issuer, serial)
             self.assertEqual(recovered.reason if recovered is not None else None, expected_reason)
+            assessed = assess_certificate_revocation(leaf.public_bytes(encoded_der), [snapshot],
+                                                      validation_time=late + timedelta(days=1))
+            self.assertEqual(assessed.status, 'revoked' if expected_reason is not None else 'unrevoked')
             for file, expected, flags in (('base.pem', previously_revoked, ()),
                                           ('series.pem', expected_reason is not None, ('-extended_crl', '-use_deltas')),
                                           ('latest.pem', expected_reason is not None, ())):

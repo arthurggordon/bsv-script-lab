@@ -192,7 +192,7 @@ decisions require trusted inputs at the application layer.
 | GB/T 20518-2018 §5.2.4.1 | A declared private ASN.1 type is checked for certificates, CRLs and revoked entries. Tests exercise valid types, invalid type and SET OF order, and a distinct missing-schema error. |
 
 Remaining X.509 scope includes other extension-specific rules, issuer
-and subject relationships, and certificate-level revocation decisions. The
+and subject relationships, and certificate path validation. The
 certificate fixture uses independently signed metadata to isolate each
 rejection from the signature bytes.
 The independent OpenSSL replay now runs 103 checks using a separate DER
@@ -255,9 +255,8 @@ issuer/serial entries and unsupported critical extensions fail the merge.
 | GB/T 20518-2018 §5.3.4.3 and RFC 5280 §5.2.3 | The optional same-time complete CRL must match the merged issuer/serial state, including reason and dates. Tests exercise an order-independent match and isolate a missing entry, extra entry, differing reason or dates, wrong number, time, issuer, scope and delta in the complete slot. |
 | Independent OpenSSL check | Six test certificates produce 18 CLI verdicts using the complete CRL alone, the pair with `-extended_crl -use_deltas`, and the simultaneous complete CRL. The pair and simultaneous complete verdicts match the snapshot, and the base-only controls distinguish absent and released entries. |
 
-The snapshot applies to one authenticated scope and time. Full certificate
-revocation assessment still requires path validation, a validation time and
-coverage of the certificate's applicable distribution points and reasons.
+The snapshot represents one scope at the delta's issue time. The
+assessment described below combines snapshots for a target certificate.
 [RFC 5280 §5.3.3](https://www.rfc-editor.org/rfc/rfc5280#section-5.3.3) ·
 [RFC 5280 §6.3.3](https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3)
 
@@ -282,6 +281,29 @@ The certificate and scope are supplied by a relying party that has
 established their authority, including the applicable trust anchor and
 certificate path. The signer ID is an explicit configuration input.
 [GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
+[RFC 5280 §6.3.3](https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3)
+
+### Certificate revocation scope and time
+
+`assess_certificate_revocation` combines caller-selected authenticated
+snapshots from complete CRLs or merged CRLs. The result is `revoked`,
+`unrevoked` or `undetermined`, together with reason coverage. A valid
+revocation entry determines `revoked`. An absent entry yields
+`unrevoked` only when the usable snapshots cover all eight reasons.
+
+| Normative area | Executable evidence |
+| --- | --- |
+| RFC 5280 §6.3.3(a) | Fixtures cover an inclusive `thisUpdate`, an exclusive `nextUpdate`, future and expired lists, release after an older hold, conflicting revisions and an entry dated after the assessment time. The latest available issue for a scope controls freshness. |
+| RFC 5280 §6.3.3(b) and issuer fallback | Positive and negative witnesses vary direct and delegated issuer names, the indirect flag, IDP matching, full and relative names, the fallback issuer point, and CA, end-entity and attribute-certificate scopes. |
+| RFC 5280 §§6.3.2 and 6.3.3(d)–(l) | Fixtures vary certificate and CRL reason masks independently, combine complementary scopes or distribution points, and distinguish partial coverage from a conclusive result. A future-dated entry or reason contradicting its CRL's mask prevents that snapshot from contributing coverage for the entry. |
+| OpenSSL comparison | CLI fixtures check five cases for matching and mismatched scope, revocation, a future CRL and an expired CRL. The six existing base/delta certificate outcomes also exercise the assessment against independently verified CLI results. |
+
+The caller supplies the applicable CRLs, any authenticated indirect issuer
+selection and a validation time. Target and signer certificate path
+validation and CRL retrieval remain external inputs. The complete-only
+snapshot loader uses numbered CRLs. Distribution name matching normalizes
+directory names and compares other forms using their decoded values.
+[RFC 5280 §6.3.2](https://www.rfc-editor.org/rfc/rfc5280#section-6.3.2) ·
 [RFC 5280 §6.3.3](https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3)
 
 The national standard catalog and the published texts were rechecked for
