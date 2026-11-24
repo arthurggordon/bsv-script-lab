@@ -8,8 +8,9 @@ from types import MappingProxyType
 
 from asn1crypto.core import ObjectIdentifier
 from asn1crypto.x509 import Certificate as ASN1Certificate, DirectoryString, Name as ASN1Name
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.x509 import CertificateRevocationList, DirectoryName, Name, ReasonFlags
-from cryptography.x509 import UnrecognizedExtension, UnsupportedGeneralNameType
+from cryptography.x509 import ExtensionNotFound, UnrecognizedExtension, UnsupportedGeneralNameType
 from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
 from cryptography.x509.oid import CRLEntryExtensionOID, ExtensionOID
 
@@ -22,6 +23,10 @@ _SM3 = bytes.fromhex('2a811ccf55018311')
 _SM3_UNKEYED = bytes.fromhex('2a811ccf5501831101')
 _SM2_SIGNATURE = bytes.fromhex('2a811ccf5501822d01')
 _SM2_WITH_SM3 = bytes.fromhex('2a811ccf55018375')
+_EC_PUBLIC_KEY = bytes.fromhex('2a8648ce3d0201')
+_CURVE_SM2 = bytes.fromhex('2a811ccf5501822d')
+_SM2_X509_SIGNATURE_OIDS = frozenset(ObjectIdentifier(contents=oid).dotted
+                                      for oid in (_SM2_SIGNATURE, _SM2_WITH_SM3))
 _MESSAGE_DIGEST = bytes.fromhex('2a864886f70d010904')
 _BASIC_CONSTRAINTS = bytes.fromhex('551d13')
 _NAME_CONSTRAINTS = bytes.fromhex('551d1e')
@@ -752,6 +757,90 @@ def _validated_crl_pair(complete_crl, delta_crl, extension_schemas):
     return complete, delta
 
 
+def _extension_value(extensions, oid):
+    try:
+        return extensions.get_extension_for_oid(oid).value
+    except ExtensionNotFound:
+        return None
+
+
+def _crl_signer_certificate(encoded):
+    if not isinstance(encoded, bytes):
+        raise ValueError('expected a DER CRL issuer certificate')
+    certificate = load_der_x509_certificate(encoded)
+    if not certificate.subject.rdns:
+        raise ValueError('CRL issuer certificate requires a nonempty subject')
+    usage = _extension_value(certificate.extensions, ExtensionOID.KEY_USAGE)
+    if usage is not None and not usage.crl_sign:
+        raise ValueError('CRL issuer certificate keyUsage must allow cRLSign')
+    return certificate
+
+
+def _check_crl_signer_identifier(crl, certificate):
+    if _issuer_key(crl.issuer) != _issuer_key(certificate.subject):
+        raise ValueError('CRL issuer name must match the signing certificate subject')
+    authority = _extension_value(crl.extensions, ExtensionOID.AUTHORITY_KEY_IDENTIFIER)
+    if authority is None:
+        return
+    subject_key = _extension_value(certificate.extensions, ExtensionOID.SUBJECT_KEY_IDENTIFIER)
+    if (authority.key_identifier is not None and subject_key is not None
+            and authority.key_identifier != subject_key.digest):
+        raise ValueError('CRL authority key identifier must match the signing certificate subject key identifier')
+    if authority.authority_cert_serial_number is not None:
+        issuer = _issuer_key(certificate.issuer)
+        alternatives = _extension_value(certificate.extensions, ExtensionOID.ISSUER_ALTERNATIVE_NAME)
+        names_match = any((isinstance(name, DirectoryName) and _issuer_key(name.value) == issuer)
+                          or (alternatives is not None and name in alternatives)
+                          for name in authority.authority_cert_issuer)
+        if authority.authority_cert_serial_number != certificate.serial_number or not names_match:
+            raise ValueError('CRL authority certificate issuer and serial must match the signing certificate')
+
+
+def _sm2_certificate_public_key(encoded):
+    certificate = ASN1Certificate.load(encoded, strict=True)
+    spki = _DER(_DER(certificate['tbs_certificate']['subject_public_key_info'].dump()).take(0x30))
+    algorithm = _DER(spki.take(0x30))
+    if algorithm.take(0x06) != _EC_PUBLIC_KEY or not algorithm.next_is(0x06) or algorithm.take(0x06) != _CURVE_SM2:
+        raise ValueError('SM2 CRL requires a signing certificate with an id-ecPublicKey on curveSM2')
+    algorithm.done()
+    bits = spki.take(0x03)
+    spki.done()
+    if bits[:1] != b'\x00':
+        raise ValueError('curveSM2 public key BIT STRING must be octet-aligned')
+    key = bits[1:]
+    parse_public(key)
+    return key
+
+
+def _verify_crl_with_certificate(crl, certificate, certificate_der, sm2_user_id):
+    _check_crl_signer_identifier(crl, certificate)
+    if crl.signature_algorithm_oid.dotted_string in _SM2_X509_SIGNATURE_OIDS:
+        if not isinstance(sm2_user_id, bytes) or len(sm2_user_id) > 8191:
+            raise ValueError('SM2 CRL verification requires an explicit SM2 signer ID of at most 8191 bytes')
+        key = _sm2_certificate_public_key(certificate_der)
+        valid = verify(key, crl.tbs_certlist_bytes, _signature(crl.signature), sm2_user_id)
+    else:
+        try:
+            valid = crl.is_signature_valid(certificate.public_key())
+        except (TypeError, UnsupportedAlgorithm) as error:
+            raise ValueError('unsupported CRL signature algorithm or signing certificate key') from error
+    if not valid:
+        raise ValueError('invalid CRL signature for the authorized signing certificate')
+
+
+def verify_crl_signature(crl, issuer_certificate, *, sm2_user_id=None, extension_schemas=None):
+    """Verify a DER CRL using a caller-authenticated DER issuer certificate.
+
+    The caller supplies a certificate authorized for the intended CRL scope
+    and its configured SM2 signer ID when the signature algorithm is SM2.
+    """
+    if not isinstance(crl, bytes):
+        raise ValueError('expected a DER CRL')
+    certificate = _crl_signer_certificate(issuer_certificate)
+    parsed_crl = _check_crl(crl, profile=True, schemas=extension_schemas)
+    _verify_crl_with_certificate(parsed_crl, certificate, issuer_certificate, sm2_user_id)
+
+
 def validate_crl_pair(complete_crl, delta_crl, *, extension_schemas=None):
     """Check whether the supplied complete CRL can be updated by the delta.
 
@@ -830,21 +919,34 @@ def _crl_revocations(revision, issuer_resolver):
 
 
 def merge_crl_revocations(complete_crl, delta_crl, *, published_crl=None, issuer_resolver=None,
-                          extension_schemas=None):
+                          issuer_certificate=None, sm2_user_id=None, extension_schemas=None):
     """Return the revocation snapshot for a complete CRL and a compatible delta.
 
-    Authenticate the selected CRLs and their scope before use, including the
-    same authorized key for the complete and delta CRLs. When published_crl
-    is supplied, compare it to the merged state at the delta's number and
-    thisUpdate. An issuer_resolver(serial, names) can select an authenticated
-    issuer Name when an indirect entry supplies multiple directoryNames.
+    Supply an authenticated issuer certificate to verify every supplied CRL
+    against its key, or authenticate the CRLs externally before calling.
+    When published_crl is supplied, compare it to the merged state at the
+    delta's number and thisUpdate. An issuer_resolver(serial, names) can
+    select an authenticated Name for an indirect entry with multiple DNs.
     """
     complete, delta = _validated_crl_pair(complete_crl, delta_crl, extension_schemas)
     authority_key = ExtensionOID.AUTHORITY_KEY_IDENTIFIER
-    keys = [next((ext.value for ext in revision.crl.extensions if ext.oid == authority_key), None)
-            for revision in (complete, delta)]
-    if keys[0] != keys[1]:
+    if _extension_value(complete.crl.extensions, authority_key) != _extension_value(delta.crl.extensions, authority_key):
         raise ValueError('complete and delta CRL authority key identifiers must match')
+    revisions = (complete, delta)
+    published = None
+    if published_crl is not None:
+        published = _crl_revision(published_crl, extension_schemas)
+        if published.base is not None or published.issued != delta.issued or published.number != delta.number:
+            raise ValueError('expected a published complete CRL with the delta CRL number and thisUpdate')
+        revisions += (published,)
+        _check_crl_numbering(revisions)
+    if issuer_certificate is not None:
+        certificate = _crl_signer_certificate(issuer_certificate)
+        for revision in revisions:
+            _verify_crl_with_certificate(revision.crl, certificate, issuer_certificate, sm2_user_id)
+    elif sm2_user_id is not None:
+        raise ValueError('SM2 signer ID requires an issuer certificate for CRL verification')
+
     entries = _crl_revocations(complete, issuer_resolver)
     for key, revocation in _crl_revocations(delta, issuer_resolver).items():
         if revocation.reason == ReasonFlags.remove_from_crl:
@@ -852,13 +954,8 @@ def merge_crl_revocations(complete_crl, delta_crl, *, published_crl=None, issuer
         else:
             entries[key] = revocation
 
-    if published_crl is not None:
-        published = _crl_revision(published_crl, extension_schemas)
-        if published.base is not None or published.issued != delta.issued or published.number != delta.number:
-            raise ValueError('expected a published complete CRL with the delta CRL number and thisUpdate')
-        _check_crl_numbering((complete, delta, published))
-        if entries != _crl_revocations(published, issuer_resolver):
-            raise ValueError('merged revocation state differs from the published complete CRL')
+    if published is not None and entries != _crl_revocations(published, issuer_resolver):
+        raise ValueError('merged revocation state differs from the published complete CRL')
 
     return CRLRevocationSnapshot(delta.number, delta.issued, delta.crl.next_update_utc, delta.scope,
                                  MappingProxyType(entries))

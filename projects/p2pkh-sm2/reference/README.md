@@ -141,14 +141,21 @@ objects from the envelope or from another authenticated source.
 
 Use `merge_crl_revocations(complete_crl, delta_crl, published_crl=...)`
 to build a snapshot for the delta CRL's number, validity times and
-scope. Supply `published_crl` to compare with a complete CRL released at
-the same `thisUpdate` and number. The snapshot's
+scope. Pass `issuer_certificate` as trusted DER to verify every supplied
+CRL with that certificate's key, or authenticate the CRLs before calling.
+Supply `sm2_user_id` as the configured signer ID when the CRL uses SM2.
+`verify_crl_signature(crl, issuer_certificate, sm2_user_id=...)` provides
+the same verification for one CRL. Establish the certificate path and
+the issuer's authority for the CRL scope before using these checks.
+
+Supply `published_crl` to compare with a complete CRL released at the
+same `thisUpdate` and number. The snapshot's
 `revocation_for(issuer_name, serial_number)` takes a `cryptography.x509.Name`
 and returns the scoped revocation entry or `None` if absent. For an
 indirect entry with multiple distinct directory names, an
 `issuer_resolver(serial_number, candidates)` can select the authenticated
-issuer name from the supplied candidates. Signature authentication,
-certificate paths, applicability and time selection remain caller inputs.
+issuer name from the supplied candidates. Distribution-point applicability
+and validation time selection remain caller inputs.
 
 The general signature verifier takes `signed_attrs_encoding='cms-set'`
 for the CMS universal SET signing input. Select `'context-field'` to

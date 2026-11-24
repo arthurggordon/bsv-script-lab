@@ -20,7 +20,7 @@ from ecdsa.util import sigdecode_der
 from signed_data import AmbiguousCertificateIssuer, MissingAttributeSchema, MissingExtensionSchema
 from signed_data import merge_crl_revocations
 from signed_data import signed_data_signer, validate_crl_pair, validate_crl_series
-from signed_data import validate_signed_data_format, verify_signed_data
+from signed_data import validate_signed_data_format, verify_crl_signature, verify_signed_data
 from sm2 import N
 from test_signed_data import (
     DATA_OID, ISSUER_AND_SERIAL, OTHER_ISSUER_AND_SERIAL, SIGNED_DATA_OID,
@@ -116,6 +116,9 @@ CLAUSE_EVIDENCE = {
     'RFC 5280.5.2.4.LocalCRLMetadata': ('crl_revocation_merge',),
     'RFC 5280.5.3.3.IndirectCRLEntryIssuer': ('crl_indirect_issuer', 'crl_merge_rejections'),
     'RFC 5280.6.3.3.c.AuthorityKeyIdentifier': ('crl_merge_rejections',),
+    'RFC 5280.6.3.3.f-h.CRLIssuerKeyAndSignature': ('crl_signature_authentication', 'crl_openssl_state'),
+    'GB/T 20518-2018.5.3.4.1.CRLIssuerKeyIdentifier': ('crl_signer_identifier',),
+    'GB/T 35276-2017.8.1-8.2.CRLSM2SignerID': ('crl_signature_authentication',),
     'RFC 5280.6.3.3.i-k.RevocationState': ('crl_revocation_merge', 'crl_indirect_issuer', 'crl_openssl_state'),
     'RFC 5280.7.1-7.3.CRLIssuerNameMatching': ('crl_pair',),
     'X.690.8.3.Integer': ('unsigned_attribute',),
@@ -917,10 +920,10 @@ class SignedDataReview(SignedDataFixtures):
         return body.replace(original, replacement, 1)
 
     @classmethod
-    def sign_review_metadata(cls, body, algorithm):
+    def sign_review_metadata(cls, body, algorithm, *, key='signer', user_id=USER_ID):
         tbs = der(0x30, body)
-        signature = cls.external_signature(tbs)
-        if not cls.external_verify(signature, tbs):
+        signature = cls.external_signature(tbs, key=key, user_id=user_id)
+        if not cls.external_verify(signature, tbs, key=key, user_id=user_id):
             raise AssertionError('invalid OpenSSL signature over review metadata')
         return der(0x30, tbs + der(0x30, algorithm) + der(0x03, b'\x00' + signature))
 
@@ -1308,7 +1311,7 @@ class SignedDataReview(SignedDataFixtures):
 
         def issue(time, number, *, base=None, common_name=b'Review issuer', name_tag=0x0c,
                   scope=None, domain=None, repeated_name=None, entries=(), authority_key=None,
-                  extra_extensions=b'', expiry=None):
+                  extra_extensions=b'', expiry=None, signing_key='signer', user_id=USER_ID):
             def rdn_attribute(oid, tag, value):
                 return der(0x30, ObjectIdentifier(oid).dump() + der(tag, value))
 
@@ -1332,7 +1335,7 @@ class SignedDataReview(SignedDataFixtures):
                 fields += der(0x30, b''.join(entries))
             if revision:
                 fields += der(0xa0, der(0x30, revision))
-            return self.sign_review_metadata(fields, algorithm)
+            return self.sign_review_metadata(fields, algorithm, key=signing_key, user_id=user_id)
 
         return issue
 
@@ -1583,6 +1586,99 @@ class SignedDataReview(SignedDataFixtures):
                     merge_crl_revocations(complete, delta, published_crl=candidate)
         COMPLETED_WITNESSES.add('crl_published_state')
 
+    def issue_crl_signer(self, *, name='Review issuer', key='signer', usage='cRLSign', serial=42, issuer_alt_name=None):
+        args = ['req', '-new', '-x509', '-key', key + '.pem', '-subj', '/CN=' + name,
+                '-days', '1', '-set_serial', str(serial), '-outform', 'DER',
+                '-addext', 'subjectKeyIdentifier=hash', '-addext', 'basicConstraints=critical,CA:FALSE']
+        if usage is not None:
+            args += ['-addext', 'keyUsage=critical,' + usage]
+        if issuer_alt_name is not None:
+            args += ['-addext', 'issuerAltName=' + issuer_alt_name]
+        return self.openssl(*args)
+
+    def test_sm2_crl_signatures_authenticate_every_snapshot_input(self):
+        issue = self.crl_revision_factory()
+        early, late = b'250101000000Z', b'250102000000Z'
+        issuer = self.issue_crl_signer()
+        identifier = b'Certificate-revocation test ID'
+        options = {'issuer_certificate': issuer, 'sm2_user_id': identifier}
+        base = issue(early, 1, user_id=identifier)
+        delta = issue(late, 2, base=1, user_id=identifier)
+        published = issue(late, 2, user_id=identifier)
+        verify_crl_signature(base, issuer, sm2_user_id=identifier)
+        verify_crl_signature(issue(early, 1), issuer, sm2_user_id=USER_ID)
+        verify_crl_signature(base, self.issue_crl_signer(usage=None), sm2_user_id=identifier)
+        self.assertEqual(merge_crl_revocations(base, delta, published_crl=published, **options).number, 2)
+
+        invalid_signature = 'invalid CRL signature for the authorized signing certificate'
+        tampered = base.replace(early, b'250101000001Z', 1)
+        self.assertNotEqual(tampered, base)
+        tbs, algorithm = x509_signed_parts(base)
+        r, s = sigdecode_der(load_der_x509_crl(base).signature, N)
+        changed_scalar = s + 1 if s + 1 < N else s - 1
+        changed_signature = der(0x30, Integer(r).dump() + Integer(changed_scalar).dump())
+        changed_value = der(0x30, der(0x30, tbs) + der(0x30, algorithm) + der(0x03, b'\x00' + changed_signature))
+        cases = (
+            ('wrong ID', base, issuer, USER_ID, invalid_signature),
+            ('missing ID', base, issuer, None, 'requires an explicit SM2 signer ID'),
+            ('invalid ID type', base, issuer, 'test identity', 'requires an explicit SM2 signer ID'),
+            ('ID too long', base, issuer, bytes(8192), 'requires an explicit SM2 signer ID'),
+            ('wrong key same subject and serial', base, self.issue_crl_signer(key='other'), identifier, invalid_signature),
+            ('wrong issuer name same key', base, self.issue_crl_signer(name='Another issuer'), identifier, 'issuer name must match'),
+            ('keyUsage missing cRLSign', base, self.issue_crl_signer(usage='digitalSignature'), identifier, 'keyUsage must allow cRLSign'),
+            ('changed tbsCertList', tampered, issuer, identifier, invalid_signature),
+            ('changed signature scalar', changed_value, issuer, identifier, invalid_signature),
+        )
+        for label, crl, certificate, user_id, error in cases:
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(ValueError, error):
+                    verify_crl_signature(crl, certificate, sm2_user_id=user_id)
+        self.openssl('ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', 'crl-wrong-curve.pem')
+        wrong_curve = self.issue_crl_signer(key='crl-wrong-curve')
+        with self.assertRaisesRegex(ValueError, 'id-ecPublicKey on curveSM2'):
+            verify_crl_signature(base, wrong_curve, sm2_user_id=identifier)
+
+        wrong_delta = issue(late, 2, base=1, signing_key='other', user_id=identifier)
+        wrong_published = issue(late, 2, signing_key='other', user_id=identifier)
+        for label, complete, update, comparison in (('base', tampered, delta, published),
+                                                     ('delta', base, wrong_delta, published),
+                                                     ('published', base, delta, wrong_published)):
+            with self.subTest(input=label):
+                with self.assertRaisesRegex(ValueError, invalid_signature):
+                    merge_crl_revocations(complete, update, published_crl=comparison, **options)
+        with self.assertRaisesRegex(ValueError, 'SM2 signer ID requires an issuer certificate'):
+            merge_crl_revocations(base, delta, sm2_user_id=identifier)
+        COMPLETED_WITNESSES.add('crl_signature_authentication')
+
+    def test_crl_signer_identifier_binds_signing_certificate_metadata(self):
+        issue = self.crl_revision_factory()
+        early, late = b'250101000000Z', b'250102000000Z'
+        certificate = self.issue_crl_signer(issuer_alt_name='DNS:issuer.example')
+        signer = load_der_x509_certificate(certificate)
+        key_id = signer.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value.digest
+        issuer_dn = der(0xa4, signer.issuer.public_bytes())
+        other_dn = der(0xa4, der(0x30, common_name_rdn(b'Other issuer')))
+        cases = (
+            ('key identifier only', der(0x80, key_id), None),
+            ('issuer and serial only', der(0xa1, issuer_dn) + der(0x82, b'\x2a'), None),
+            ('issuer alternative and serial', der(0xa1, der(0x82, b'issuer.example')) + der(0x82, b'\x2a'), None),
+            ('both identifier forms', der(0x80, key_id) + der(0xa1, issuer_dn) + der(0x82, b'\x2a'), None),
+            ('wrong key identifier', der(0x80, b'different key identifier'), 'must match the signing certificate subject key identifier'),
+            ('wrong serial only', der(0xa1, issuer_dn) + der(0x82, b'\x2b'), 'issuer and serial must match'),
+            ('wrong issuer only', der(0xa1, other_dn) + der(0x82, b'\x2a'), 'issuer and serial must match'),
+        )
+        for label, fields, error in cases:
+            ext = x509_extension('2.5.29.35', der(0x30, fields))
+            complete = issue(early, 1, extra_extensions=ext)
+            delta = issue(late, 2, base=1, extra_extensions=ext)
+            with self.subTest(case=label):
+                if error is None:
+                    merge_crl_revocations(complete, delta, issuer_certificate=certificate, sm2_user_id=USER_ID)
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        merge_crl_revocations(complete, delta, issuer_certificate=certificate, sm2_user_id=USER_ID)
+        COMPLETED_WITNESSES.add('crl_signer_identifier')
+
     def test_openssl_independently_agrees_on_certificate_revocation(self):
         early = datetime(2025, 1, 1, tzinfo=timezone.utc)
         late = early + timedelta(days=1)
@@ -1626,7 +1722,8 @@ class SignedDataReview(SignedDataFixtures):
         delta = crl(12, late, ((101, late, remove), (103, late, compromise), (104, late, superseded), (105, late, remove)),
                     delta_base=11)
         published = crl(12, late, ((102, early, compromise), (103, late, compromise), (104, late, superseded)))
-        (self.directory / 'root.pem').write_bytes(certificate(issuer, 1, ca=True).public_bytes(pem))
+        issuer_certificate = certificate(issuer, 1, ca=True)
+        (self.directory / 'root.pem').write_bytes(issuer_certificate.public_bytes(pem))
         for label, item in (('base.pem', base), ('delta.pem', delta), ('latest.pem', published)):
             (self.directory / label).write_bytes(item.public_bytes(pem))
             verified = subprocess.run(['openssl', 'crl', '-verify', '-CAfile', 'root.pem', '-in', label, '-noout'],
@@ -1634,7 +1731,8 @@ class SignedDataReview(SignedDataFixtures):
             self.assertIn(b'verify OK', verified.stderr)
         (self.directory / 'series.pem').write_bytes(base.public_bytes(pem) + delta.public_bytes(pem))
         snapshot = merge_crl_revocations(base.public_bytes(encoded_der), delta.public_bytes(encoded_der),
-                                         published_crl=published.public_bytes(encoded_der))
+                                         published_crl=published.public_bytes(encoded_der),
+                                         issuer_certificate=issuer_certificate.public_bytes(encoded_der))
         cases = ((101, True, None), (102, True, compromise), (103, False, compromise), (104, True, superseded),
                  (105, False, None), (106, False, None))
         for serial, previously_revoked, expected_reason in cases:

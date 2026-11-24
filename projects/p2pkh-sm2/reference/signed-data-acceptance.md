@@ -230,8 +230,8 @@ series and establishes issuer identity before comparing its metadata.
 | RFC 5280 §§7.1, 7.3 | The pair fixture exercises UTF8String and PrintableString comparison, insignificant space and case folding, domain-component case, and differing RDN attribute multiplicity. The distribution point scope is compared by its canonical DER value. |
 
 The fixtures use OpenSSL to sign and verify both CRLs before invoking the
-metadata verifier. Validation of the signing key and path and publication
-of the referenced complete CRL require separate evidence.
+metadata verifier. The issuer-certificate path and publication of the
+referenced complete CRL require separate evidence.
 [GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
 [RFC 5280 §5.2.4](https://www.rfc-editor.org/rfc/rfc5280#section-5.2.4) ·
 [RFC 5280 §7.1](https://www.rfc-editor.org/rfc/rfc5280#section-7.1)
@@ -256,10 +256,32 @@ issuer/serial entries and unsupported critical extensions fail the merge.
 | Independent OpenSSL check | Six test certificates produce 18 CLI verdicts using the complete CRL alone, the pair with `-extended_crl -use_deltas`, and the simultaneous complete CRL. The pair and simultaneous complete verdicts match the snapshot, and the base-only controls distinguish absent and released entries. |
 
 The snapshot applies to one authenticated scope and time. Full certificate
-revocation assessment still requires signature and path authentication, a
-validation time and coverage of the certificate's applicable distribution
-points and revocation reasons.
+revocation assessment still requires path validation, a validation time and
+coverage of the certificate's applicable distribution points and reasons.
 [RFC 5280 §5.3.3](https://www.rfc-editor.org/rfc/rfc5280#section-5.3.3) ·
+[RFC 5280 §6.3.3](https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3)
+
+### CRL signer authentication
+
+`verify_crl_signature` and the `issuer_certificate` option of
+`merge_crl_revocations` bind each CRL to a caller-authenticated issuer
+certificate. The merger verifies the complete, delta, and optional
+same-time complete inputs with the same certificate key before applying
+any revocation entry. For SM2, the verifier uses the certificate's
+uncompressed curveSM2 key, the original `tbsCertList` octets, the DER
+signature value, and the caller's configured signer ID. The RSA fixture
+checks the platform signature verification path independently with OpenSSL.
+
+| Normative area | Executable evidence |
+| --- | --- |
+| RFC 5280 §6.3.3(f)–(h) | The signed tests vary the key with the subject and serial fixed, change the issuer DN with the key fixed, and check keyUsage with cRLSign set, clear or absent. Independent counterexamples target each of the complete, delta and optional publication positions. |
+| GB/T 20518-2018 §§5.3.2 and 5.3.4.1 | The fixtures vary the key identifier, the authority certificate issuer and the serial independently. The verifier compares a key identifier to a certificate SKI when both are present and tests each of the two authority identifier forms. The CRL signature is checked even when identifiers are absent. |
+| GB/T 35276-2017 §§8.1–8.2 | OpenSSL signs and verifies with both a standard-length and an application-specific SM2 ID. The implementation rejects a wrong or unavailable ID, a different curve and an edited `tbsCertList`. |
+
+The certificate and scope are supplied by a relying party that has
+established their authority, including the applicable trust anchor and
+certificate path. The signer ID is an explicit configuration input.
+[GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
 [RFC 5280 §6.3.3](https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3)
 
 The national standard catalog and the published texts were rechecked for
