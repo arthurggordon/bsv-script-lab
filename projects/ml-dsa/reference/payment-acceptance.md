@@ -67,7 +67,8 @@ explicit synthetic prevouts through `verifyscript` on a peerless regtest.
 ## Recorded replay
 
 The 640 rows matched on Linux x86-64 with the
-[pinned chain-gang build](../../../shared/requirements-chronicle.txt) and
-BSV Node 1.2.3 (`101020300`). OpenSSL 3.5.7 generated the test signatures.
+[pinned chain-gang build](../../../shared/requirements-chronicle.txt),
+BSV Node 1.2.3 (`101020300`), and Lean `bsvs` from revision
+`1c051eaef1077cc95e5d1618686d5efacc4aa097`. OpenSSL 3.5.7 generated the test signatures.
 The pinned corpora also matched 15/15 ACVP cases in Python and Script and
 80/80 Wycheproof cases in Python.

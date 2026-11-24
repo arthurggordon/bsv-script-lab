@@ -54,6 +54,7 @@ seconds with `-maxscriptsizepolicy=100000000`; the default policy rejected the
 926,403-byte lock before script execution.
 
 The expanded payment fixture matched all 640 rows on the pinned chain-gang
-build and native BSV Node 1.2.3. The matrix checks every combination of its
-four declared axes and verifies that no row is repeated or omitted.
+build, native BSV Node 1.2.3, and the same Lean revision. The matrix checks every
+combination of its four declared axes and verifies that no row is repeated or
+omitted.
 [Payment acceptance and limits](../projects/ml-dsa/reference/payment-acceptance.md)
