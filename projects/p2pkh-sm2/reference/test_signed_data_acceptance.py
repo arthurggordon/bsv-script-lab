@@ -120,6 +120,8 @@ CLAUSE_EVIDENCE = {
     'RFC 5280.6.3.3.b.DistributionPointScope': ('crl_assessment_scope', 'crl_assessment_openssl'),
     'RFC 5280.6.3.3.d-l.ReasonCoverage': ('crl_assessment_reasons', 'crl_assessment_openssl', 'crl_openssl_state'),
     'RFC 5280.6.3.3.f-h.CRLIssuerKeyAndSignature': ('crl_signature_authentication', 'crl_openssl_state'),
+    'RFC 5280.6.1.PinnedCertificatePath': ('revocation_path_constraints', 'revocation_sm2_path'),
+    'RFC 5280.6.3.3.f.SharedTrustAnchor': ('revocation_common_anchor', 'revocation_sm2_path'),
     'GB/T 20518-2018.5.3.4.1.CRLIssuerKeyIdentifier': ('crl_signer_identifier',),
     'GB/T 35276-2017.8.1-8.2.CRLSM2SignerID': ('crl_signature_authentication',),
     'RFC 5280.6.3.3.i-k.RevocationState': ('crl_revocation_merge', 'crl_indirect_issuer', 'crl_openssl_state'),
@@ -1878,6 +1880,148 @@ class SignedDataReview(SignedDataFixtures):
                 if error:
                     self.assertIn(error, checked.stderr)
         COMPLETED_WITNESSES.add('crl_assessment_openssl')
+
+    def revocation_path_fixture(self):
+        now = datetime(2025, 1, 2, tzinfo=timezone.utc)
+        keys = [rsa.generate_private_key(public_exponent=65537, key_size=2048) for _ in range(4)]
+        root_key, ca_key, crl_key, other_key = keys
+        root_name, ca_name, crl_name, leaf_name = (
+            Name([NameAttribute(NameOID.COMMON_NAME, label)])
+            for label in ('Path root', 'Path intermediate', 'Delegated CRL signer', 'Path leaf'))
+        uri = [x509.UniformResourceIdentifier('http://example.invalid/delegated.crl')]
+        point = x509.DistributionPoint(uri, None, None, [x509.DirectoryName(crl_name)])
+
+        def cert(subject, key, signer_name, signer_key, serial, *, ca=False, signing=False, crl_sign=False,
+                 path_length=None, extensions=(), start=None, end=None):
+            usage = x509.KeyUsage(not signing and not crl_sign, False, False, False, False,
+                                  signing, crl_sign, None, None)
+            builder = (x509.CertificateBuilder().subject_name(subject).issuer_name(signer_name).serial_number(serial)
+                       .public_key(key.public_key()).not_valid_before(start or now - timedelta(days=1))
+                       .not_valid_after(end or now + timedelta(days=2))
+                       .add_extension(x509.BasicConstraints(ca, path_length), critical=True)
+                       .add_extension(usage, critical=True)
+                       .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+                       .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(signer_key.public_key()), critical=False))
+            for extension, critical in extensions:
+                builder = builder.add_extension(extension, critical=critical)
+            return builder.sign(signer_key, hashes.SHA256()).public_bytes(serialization.Encoding.DER)
+
+        def root(*, key=root_key, path_length=1):
+            return cert(root_name, key, root_name, key, 1, ca=True, signing=True, path_length=path_length)
+
+        def intermediate(*, key=root_key, signing=True, extensions=()):
+            return cert(ca_name, ca_key, root_name, key, 2, ca=True, signing=signing, path_length=0,
+                        extensions=extensions)
+
+        def target(*, dns='www.allowed.example', start=None, end=None, extensions=()):
+            names = x509.SubjectAlternativeName([x509.DNSName(dns)])
+            return cert(leaf_name, other_key, ca_name, ca_key, 3, start=start, end=end,
+                        extensions=((names, False), (x509.CRLDistributionPoints([point]), False), *extensions))
+
+        def delegated(*, signer_name=ca_name, signer_key=ca_key, start=None):
+            certificate = cert(crl_name, crl_key, signer_name, signer_key, 4, crl_sign=True, start=start)
+            scope = x509.IssuingDistributionPoint(uri, None, False, False, None, True, False)
+            crl = (x509.CertificateRevocationListBuilder().issuer_name(crl_name).last_update(now - timedelta(hours=1))
+                   .next_update(now + timedelta(hours=1)).add_extension(x509.CRLNumber(1), critical=False)
+                   .add_extension(scope, critical=True).sign(crl_key, hashes.SHA256()))
+            return load_crl_snapshot(crl.public_bytes(serialization.Encoding.DER), certificate)
+
+        return root, intermediate, target, delegated, now, root_name, other_key
+
+    def test_revocation_paths_require_one_explicit_common_trust_anchor(self):
+        root, intermediate, target, delegated, now, root_name, other_key = self.revocation_path_fixture()
+        anchor = root()
+        other_anchor = root(key=other_key)
+        parent = intermediate()
+        leaf = target()
+        snapshot = delegated()
+
+        def assess(target_cert, snapshots, **options):
+            settings = {'validation_time': now, 'trust_anchor': anchor, 'intermediates': [parent], **options}
+            return assess_certificate_revocation(target_cert, snapshots, **settings)
+
+        self.assertEqual(assess(leaf, iter((snapshot, snapshot))).status, 'unrevoked')
+        self.assertEqual(assess(leaf, [snapshot], trust_anchor=parent, intermediates=()).status, 'unrevoked')
+        self.assertEqual(assess(leaf, []).status, 'undetermined')
+        self.assertEqual(assess(leaf, [snapshot], intermediates=[other_anchor, parent]).status, 'unrevoked')
+        foreign = delegated(signer_name=root_name, signer_key=other_key)
+        cases = (
+            ('target path incomplete', leaf, [snapshot], {'intermediates': ()}, 'target certificate path validation failed'),
+            ('same root name with wrong key', leaf, [snapshot], {'trust_anchor': other_anchor}, 'target certificate path validation failed'),
+            ('foreign signer', leaf, [snapshot, foreign], {}, 'CRL signer certificate path validation failed'),
+            ('foreign root supplied as intermediate', leaf, [foreign], {'intermediates': [parent, other_anchor]},
+             'CRL signer certificate path validation failed'),
+            ('signer not yet valid', leaf, [delegated(start=now + timedelta(hours=2))], {}, 'CRL signer certificate path validation failed'),
+            ('intermediates without anchor', leaf, [snapshot], {'trust_anchor': None}, 'intermediates require an explicit trust anchor'),
+            ('anchor is not DER', leaf, [snapshot], {'trust_anchor': b'bad anchor'}, 'invalid DER trust anchor certificate'),
+        )
+        for label, encoded, snapshots, options, error in cases:
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(ValueError, error):
+                    assess(encoded, snapshots, **options)
+        COMPLETED_WITNESSES.add('revocation_common_anchor')
+
+    def test_revocation_paths_enforce_certificate_constraints(self):
+        root, intermediate, target, delegated, now, _, _ = self.revocation_path_fixture()
+        anchor, snapshot = root(), delegated()
+        allowed_name = x509.NameConstraints([x509.DNSName('.allowed.example')], None)
+        constrained = intermediate(extensions=((allowed_name, True),))
+        policy_required = intermediate(extensions=((x509.PolicyConstraints(0, None), True),))
+        common_policy = x509.CertificatePolicies([x509.PolicyInformation(x509.ObjectIdentifier('1.2.3.4.99'), None)])
+        policy_parent = intermediate(extensions=((common_policy, False), (x509.PolicyConstraints(0, None), True)))
+        unknown = x509.UnrecognizedExtension(x509.ObjectIdentifier('1.2.3.4.551'), b'\x05\x00')
+        good = target()
+        settings = {'validation_time': now, 'trust_anchor': anchor, 'intermediates': [constrained]}
+        self.assertEqual(assess_certificate_revocation(good, [snapshot], **settings).status, 'unrevoked')
+        self.assertEqual(assess_certificate_revocation(target(extensions=((common_policy, False),)), [],
+                                                         **{**settings, 'intermediates': [policy_parent]}).status, 'undetermined')
+        cases = (
+            ('outside permitted name subtree', target(dns='other.example'), {}),
+            ('expired', target(start=now - timedelta(days=2), end=now - timedelta(hours=1)), {}),
+            ('not yet valid', target(start=now + timedelta(hours=1)), {}),
+            ('changed certificate signature', good[:-1] + bytes((good[-1] ^ 1,)), {}),
+            ('unknown critical extension', target(extensions=((unknown, True),)), {}),
+            ('path length exceeds anchor constraint', good, {'trust_anchor': root(path_length=0)}),
+            ('intermediate cannot sign certificates', good, {'intermediates': [intermediate(signing=False)]}),
+            ('explicit policy missing', good, {'intermediates': [policy_required]}),
+        )
+        for label, encoded, overrides in cases:
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(ValueError, 'target certificate path validation failed'):
+                    assess_certificate_revocation(encoded, [snapshot], **{**settings, **overrides})
+        COMPLETED_WITNESSES.add('revocation_path_constraints')
+
+    def test_openssl_issued_sm2_certificate_and_crl_share_trust_anchor(self):
+        marker = datetime.now(timezone.utc)
+        self.openssl('req', '-new', '-x509', '-key', 'signer.pem', '-sm3', '-subj', '/CN=SM2 path root',
+                     '-set_serial', '71', '-days', '2', '-out', 'sm2-path-root.pem',
+                     '-addext', 'subjectKeyIdentifier=hash', '-addext', 'basicConstraints=critical,CA:TRUE',
+                     '-addext', 'keyUsage=critical,keyCertSign,cRLSign')
+        self.openssl('req', '-new', '-key', 'other.pem', '-sm3', '-subj', '/CN=SM2 path issuer', '-out', 'sm2-path-ca.csr')
+        (self.directory / 'sm2-path-ca.ext').write_text('basicConstraints=critical,CA:TRUE,pathlen:0\n'
+                                                       'keyUsage=critical,keyCertSign,cRLSign\n'
+                                                       'subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n')
+        self.openssl('x509', '-req', '-in', 'sm2-path-ca.csr', '-CA', 'sm2-path-root.pem', '-CAkey', 'signer.pem',
+                     '-set_serial', '72', '-sm3', '-days', '1', '-extfile', 'sm2-path-ca.ext', '-out', 'sm2-path-ca.pem')
+        self.openssl('genpkey', '-algorithm', 'SM2', '-out', 'sm2-path-leaf.key')
+        self.openssl('req', '-new', '-key', 'sm2-path-leaf.key', '-sm3', '-subj', '/CN=SM2 path leaf', '-out', 'sm2-path-leaf.csr')
+        (self.directory / 'sm2-path-leaf.ext').write_text('basicConstraints=critical,CA:FALSE\n'
+                                                         'authorityKeyIdentifier=keyid:always\n')
+        leaf = self.openssl('x509', '-req', '-in', 'sm2-path-leaf.csr', '-CA', 'sm2-path-ca.pem', '-CAkey', 'other.pem',
+                            '-set_serial', '42', '-sm3', '-days', '1', '-extfile', 'sm2-path-leaf.ext', '-outform', 'DER')
+        anchor = self.openssl('x509', '-in', 'sm2-path-root.pem', '-outform', 'DER')
+        intermediate = self.openssl('x509', '-in', 'sm2-path-ca.pem', '-outform', 'DER')
+        issue = self.crl_revision_factory()
+        early = (marker - timedelta(seconds=30)).strftime('%y%m%d%H%M%SZ').encode()
+        expires = (marker + timedelta(hours=1)).strftime('%y%m%d%H%M%SZ').encode()
+        crl = issue(early, 1, common_name=b'SM2 path issuer', expiry=expires, signing_key='other')
+        snapshot = load_crl_snapshot(crl, intermediate, sm2_user_id=USER_ID)
+        verdict = assess_certificate_revocation(leaf, [snapshot], trust_anchor=anchor, intermediates=[intermediate],
+                                                  validation_time=marker + timedelta(minutes=1))
+        self.assertEqual(verdict.status, 'unrevoked')
+        with self.assertRaisesRegex(ValueError, 'target certificate path validation failed'):
+            assess_certificate_revocation(leaf, [snapshot], trust_anchor=anchor, validation_time=marker + timedelta(minutes=1))
+        COMPLETED_WITNESSES.add('revocation_sm2_path')
 
     def test_openssl_independently_agrees_on_certificate_revocation(self):
         early = datetime(2025, 1, 1, tzinfo=timezone.utc)

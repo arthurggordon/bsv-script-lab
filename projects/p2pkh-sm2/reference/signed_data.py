@@ -15,6 +15,7 @@ from cryptography.x509 import ExtensionNotFound, UnrecognizedExtension, Unsuppor
 from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
 from cryptography.x509.oid import CRLEntryExtensionOID, ExtensionOID
 
+from certificate_path import verify_revocation_paths
 from sm2 import N, USER_ID, be32, parse_public, sm3, verify
 
 
@@ -868,6 +869,7 @@ class CRLRevocationSnapshot:
     issuer: Name | None = None
     _distribution: IssuingDistributionPoint | None = field(default=None, repr=False)
     _authenticated: bool = field(default=False, repr=False)
+    _issuer_certificate: bytes | None = field(default=None, repr=False)
 
     def revocation_for(self, issuer: Name, serial_number: int) -> CRLRevocation | None:
         """Return the entry in this scope, or None when the issuer and serial are absent."""
@@ -922,12 +924,12 @@ def _crl_revocations(revision, issuer_resolver):
     return entries
 
 
-def _crl_snapshot(revision, entries, *, authenticated):
+def _crl_snapshot(revision, entries, *, issuer_certificate):
     crl = revision.crl
     distribution = _extension_value(crl.extensions, ExtensionOID.ISSUING_DISTRIBUTION_POINT)
     return CRLRevocationSnapshot(revision.number, revision.issued, crl.next_update_utc,
                                  revision.scope, MappingProxyType(entries), crl.issuer,
-                                 distribution, authenticated)
+                                 distribution, issuer_certificate is not None, issuer_certificate)
 
 
 def load_crl_snapshot(crl, issuer_certificate, *, sm2_user_id=None, issuer_resolver=None, extension_schemas=None):
@@ -937,7 +939,7 @@ def load_crl_snapshot(crl, issuer_certificate, *, sm2_user_id=None, issuer_resol
         raise ValueError('a delta CRL requires a compatible complete CRL')
     certificate = _crl_signer_certificate(issuer_certificate)
     _verify_crl_with_certificate(revision.crl, certificate, issuer_certificate, sm2_user_id)
-    return _crl_snapshot(revision, _crl_revocations(revision, issuer_resolver), authenticated=True)
+    return _crl_snapshot(revision, _crl_revocations(revision, issuer_resolver), issuer_certificate=issuer_certificate)
 
 
 def merge_crl_revocations(complete_crl, delta_crl, *, published_crl=None, issuer_resolver=None,
@@ -979,7 +981,7 @@ def merge_crl_revocations(complete_crl, delta_crl, *, published_crl=None, issuer
     if published is not None and entries != _crl_revocations(published, issuer_resolver):
         raise ValueError('merged revocation state differs from the published complete CRL')
 
-    return _crl_snapshot(delta, entries, authenticated=issuer_certificate is not None)
+    return _crl_snapshot(delta, entries, issuer_certificate=issuer_certificate)
 
 
 _ALL_REVOCATION_REASONS = frozenset(ReasonFlags) - {ReasonFlags.unspecified, ReasonFlags.remove_from_crl}
@@ -1062,17 +1064,30 @@ def _latest_crl_scopes(snapshots, validation_time):
     return (snapshot for snapshot in latest.values() if validation_time < snapshot.next_update)
 
 
-def assess_certificate_revocation(certificate, snapshots, *, validation_time):
+def assess_certificate_revocation(certificate, snapshots, *, validation_time, trust_anchor=None, intermediates=()):
     """Assess a DER certificate against caller-supplied authenticated CRL snapshots.
 
-    The caller establishes the target and CRL signer paths under the same
-    trust anchor and supplies the relevant available CRLs. The result is
-    revoked, unrevoked or undetermined for the given timezone-aware time.
+    Supply a DER trust_anchor and any untrusted DER intermediates to verify
+    the target and snapshot signer paths under that anchor. Otherwise the
+    caller establishes the paths. The result is revoked, unrevoked or
+    undetermined for the given timezone-aware time.
     """
     if not isinstance(validation_time, datetime) or validation_time.utcoffset() is None:
         raise ValueError('CRL validation time must be a timezone-aware datetime')
     if not isinstance(certificate, bytes):
         raise ValueError('expected a DER certificate for revocation assessment')
+    if trust_anchor is not None:
+        snapshots = tuple(snapshots)
+        signers = []
+        for snapshot in snapshots:
+            if (not isinstance(snapshot, CRLRevocationSnapshot) or not snapshot._authenticated
+                    or snapshot._issuer_certificate is None):
+                raise ValueError('certificate path validation requires CRL snapshots with authenticated signer certificates')
+            signers.append(snapshot._issuer_certificate)
+        verify_revocation_paths(certificate, dict.fromkeys(signers), trust_anchor=trust_anchor,
+                                intermediates=intermediates, validation_time=validation_time)
+    elif intermediates:
+        raise ValueError('certificate path intermediates require an explicit trust anchor')
     target = load_der_x509_certificate(certificate)
     basic = _extension_value(target.extensions, ExtensionOID.BASIC_CONSTRAINTS)
     is_ca = basic is not None and basic.ca

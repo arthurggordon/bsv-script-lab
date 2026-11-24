@@ -162,7 +162,12 @@ for a numbered complete CRL or pass `issuer_certificate` when merging. For
 the supplied timezone-aware time, the assessment returns `revoked`,
 `unrevoked` when the available lists cover every reason, or `undetermined`
 when coverage is insufficient. The caller supplies the available CRLs and
-establishes the target and signing certificate paths under the same anchor.
+can pass `trust_anchor` and `intermediates` to the assessment to validate
+the target and CRL signer paths under one explicitly trusted DER
+certificate. This mode uses the local OpenSSL verifier with the supplied
+validation time. The certificate signature uses OpenSSL's configured
+algorithm behavior. `sm2_user_id` configures the separate CRL signature
+check. Callers with independently validated paths can omit `trust_anchor`.
 
 The general signature verifier takes `signed_attrs_encoding='cms-set'`
 for the CMS universal SET signing input. Select `'context-field'` to

@@ -192,7 +192,7 @@ decisions require trusted inputs at the application layer.
 | GB/T 20518-2018 §5.2.4.1 | A declared private ASN.1 type is checked for certificates, CRLs and revoked entries. Tests exercise valid types, invalid type and SET OF order, and a distinct missing-schema error. |
 
 Remaining X.509 scope includes other extension-specific rules, issuer
-and subject relationships, and certificate path validation. The
+and subject relationships, and revocation of certificates in the path. The
 certificate fixture uses independently signed metadata to isolate each
 rejection from the signature bytes.
 The independent OpenSSL replay now runs 103 checks using a separate DER
@@ -277,9 +277,9 @@ checks the platform signature verification path independently with OpenSSL.
 | GB/T 20518-2018 §§5.3.2 and 5.3.4.1 | The fixtures vary the key identifier, the authority certificate issuer and the serial independently. The verifier compares a key identifier to a certificate SKI when both are present and tests each of the two authority identifier forms. The CRL signature is checked even when identifiers are absent. |
 | GB/T 35276-2017 §§8.1–8.2 | OpenSSL signs and verifies with both a standard-length and an application-specific SM2 ID. The implementation rejects a wrong or unavailable ID, a different curve and an edited `tbsCertList`. |
 
-The certificate and scope are supplied by a relying party that has
-established their authority, including the applicable trust anchor and
-certificate path. The signer ID is an explicit configuration input.
+The relying party supplies the authorized scope. The signer ID is an
+explicit configuration input. Certificate paths can be checked during
+assessment under a caller-selected trust anchor.
 [GB/T 20518-2018](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=F7B410A1B0C06206E5FFB0FBFEE82C75) ·
 [RFC 5280 §6.3.3](https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3)
 
@@ -299,11 +299,33 @@ revocation entry determines `revoked`. An absent entry yields
 | OpenSSL comparison | CLI fixtures check five cases for matching and mismatched scope, revocation, a future CRL and an expired CRL. The six existing base/delta certificate outcomes also exercise the assessment against independently verified CLI results. |
 
 The caller supplies the applicable CRLs, any authenticated indirect issuer
-selection and a validation time. Target and signer certificate path
-validation and CRL retrieval remain external inputs. The complete-only
-snapshot loader uses numbered CRLs. Distribution name matching normalizes
-directory names and compares other forms using their decoded values.
+selection and a validation time. The complete-only snapshot loader uses
+numbered CRLs. Distribution name matching normalizes directory names and
+compares other forms using their decoded values.
 [RFC 5280 §6.3.2](https://www.rfc-editor.org/rfc/rfc5280#section-6.3.2) ·
+[RFC 5280 §6.3.3](https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3)
+
+### Pinned certificate paths for revocation assessment
+
+Pass `trust_anchor` and any untrusted DER `intermediates` to
+`assess_certificate_revocation`. OpenSSL validates the target chain and
+the chain for each distinct certificate that authenticated a CRL snapshot,
+at the requested time and with a trust store containing only the explicit
+anchor. The target uses generic path validation and the CRL signer uses
+the CRL-signing purpose. Path policy processing starts with `anyPolicy`.
+A caller can also pin an intermediate as its
+trust anchor. Path rejection aborts the assessment.
+
+| Normative area | Executable evidence |
+| --- | --- |
+| RFC 5280 §6.1 | The fixtures exercise a missing intermediate, a modified certificate signature, certificate validity, name constraints, maximum path length, CA key usage, an unrecognized critical extension and explicit policy constraints. Positive controls exercise permitted names and matching explicit policies. |
+| RFC 5280 §6.3.3(f) | A delegated RSA CRL signer and its target validate under one anchor. A root with the same subject and a different key, a signer rooted elsewhere, and an unrelated root presented as an intermediate are rejected. A separate OpenSSL-issued SM2 chain exercises the target and the CRL signer under one anchor and rejects a missing SM2 intermediate. |
+
+Path verification uses the local OpenSSL certificate signature behavior.
+The CRL signer ID controls CRL signature verification. The caller supplies
+the available CRLs and verification time. Revocation of intermediate and
+CRL signer certificates requires separate evidence.
+[RFC 5280 §6.1](https://www.rfc-editor.org/rfc/rfc5280#section-6.1) ·
 [RFC 5280 §6.3.3](https://www.rfc-editor.org/rfc/rfc5280#section-6.3.3)
 
 The national standard catalog and the published texts were rechecked for
