@@ -51,6 +51,20 @@ candidate saves 11,966 bytes under ForkID ALL and 35,898 bytes under
 Chronicle OTDA ALL. The acceptance tests run the 1,230-row matrix and
 mutations across all 67 signature chains for both formats.
 
+The full lifecycle starts with one native P2PKH input funding two WOTS+
+outputs and ends with both outputs spent to native P2PKH. The turnover
+path adds a WOTS+ two-input, two-output payment in between.
+
+| Path | Existing format | Cached constants |
+| --- | ---: | ---: |
+| ForkID ALL, fund and exit | 89,496 B | 77,530 B |
+| ForkID ALL, one turnover | 178,765 B | 154,833 B |
+| Chronicle OTDA ALL, fund and exit | 89,510 B | 77,543 B |
+| Chronicle OTDA ALL, one turnover | 347,775 B | 299,911 B |
+
+Exit costs the same in both formats because the exit outputs are ordinary
+P2PKH and the WOTS+ signature and witness format are identical.
+
 ### Lean conformance
 
 Build the [bsv-script-lean evaluator](https://github.com/Calhooon/bsv-script-lean#try-it)
