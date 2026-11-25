@@ -93,6 +93,22 @@ uses the same transaction framing and CompactSize widths. OTDA ALL repeats
 the serialized outputs in each signing preimage, so the shorter output
 reduces each input witness as well.
 
+Over the full lifecycle, use the same native P2PKH funding input and the
+same two native P2PKH exit outputs. Both Lamport outputs are funded and
+later spent. A turnover spends both Lamport inputs into two fresh Lamport
+outputs before exit.
+
+| Path | Full-key lifecycle | Committed-key lifecycle |
+| --- | ---: | ---: |
+| ForkID ALL, fund and exit | 62,618 B | 48,933 B |
+| ForkID ALL, one turnover | 125,009 B | 97,641 B |
+| Chronicle OTDA ALL, fund and exit | 62,631 B | 48,947 B |
+| Chronicle OTDA ALL, one turnover | 216,068 B | 128,563 B |
+
+Exiting directly to ordinary outputs adds 8,192 witness bytes per committed
+input. When funding and exit pay different fees per byte, compare the
+15,034-byte funding reduction and the 8,192-byte exit increase separately.
+
 ```sh
 python projects/lamport-ots/reference/measure.py --committed-costs
 bash projects/lamport-ots/reference/verify.sh
