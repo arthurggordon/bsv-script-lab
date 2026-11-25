@@ -1,0 +1,13 @@
+[package]
+name = "sm2-signed-data-signer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+der = { version = "0.8.3", features = ["alloc", "derive", "oid"] }
+getrandom = { version = "0.4.3", features = ["sys_rng"] }
+hex = "0.4.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sm2 = { version = "0.14.0", default-features = false, features = ["dsa", "pkcs8", "precomputed-tables", "std"] }

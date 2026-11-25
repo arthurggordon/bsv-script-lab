@@ -7,6 +7,7 @@ from pathlib import Path
 import random
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from assemble import assemble
@@ -18,11 +19,17 @@ from shared.script import push,number,assemble as assemble_blocks
 from shared.transaction import *
 
 ROOT=Path(__file__).resolve().parents[1]
+SM3_PROFILES = ({}, {'optimized': True}, {'compact': True})
 
 
 def der(tag,raw):
-    n=len(raw); length=bytes([n]) if n<128 else bytes([0x81,n])
-    return bytes([tag])+length+raw
+    size = len(raw)
+    if size < 128:
+        length = bytes((size,))
+    else:
+        encoded = size.to_bytes((size.bit_length() + 7) // 8, 'big')
+        length = bytes((0x80 | len(encoded),)) + encoded
+    return bytes((tag,)) + length + raw
 
 
 def der_signature(sig):
@@ -87,17 +94,30 @@ class SM2Tests(unittest.TestCase):
         rng=random.Random(4818)
         for n in (0,3,55,56,63,64,65,82,119,120,127,128,210):
             message=rng.randbytes(n)
-            with self.subTest(length=n):
-                stack,alt=evaluate(hash_script(n),[b'lower',message])
-                self.assertEqual(stack,[b'lower',sm3(message)]); self.assertEqual(alt,[])
+            for profile in SM3_PROFILES:
+                with self.subTest(length=n,profile=profile):
+                    stack,alt=evaluate(hash_script(n,**profile),[b'lower',message])
+                    self.assertEqual(stack,[b'lower',sm3(message)]); self.assertEqual(alt,[])
         self.assertEqual(sm3(b'abc').hex(),'66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0')
 
     def test_sm3_fixed_prefix_midstate(self):
         for d in (1,2,19,N-2):
             key=encode_public(mul(d)); prefix=b'\0\x80'+USER_ID+be32(A)+be32(B)+be32(G[0])+be32(G[1])
             state=compress(compress(IV,prefix[:64]),prefix[64:128])
-            stack,alt=evaluate(hash_script(82,state,128),[prefix[128:]+key[1:]])
-            self.assertEqual(stack,[za(key)]); self.assertEqual(alt,[])
+            for profile in SM3_PROFILES:
+                with self.subTest(key=d,profile=profile):
+                    stack,alt=evaluate(hash_script(82,state,128,**profile),[prefix[128:]+key[1:]])
+                    self.assertEqual(stack,[za(key)]); self.assertEqual(alt,[])
+
+    def test_compact_sm3_preserves_lower_stack_and_checks_input_length(self):
+        script=hash_script(64,compact=True)
+        lower=[(1 << 32).to_bytes(5,'little'), b'\x80', b'lower']
+        for data in (bytes(64), b'\xff'*64, b'\x80\x01'*32):
+            with self.subTest(word=data[:2].hex()):
+                self.assertEqual(evaluate(script,lower+[data]),(lower+[sm3(data)],[]))
+        for length in (63,65):
+            with self.subTest(length=length), self.assertRaisesRegex(ScriptError,'NUMEQUALVERIFY'):
+                evaluate(script,lower+[bytes(length)])
 
     def test_openssl_standard_and_round_trip(self):
         self.assertIsNotNone(shutil.which('openssl'),'OpenSSL with SM2 is required')
@@ -124,6 +144,7 @@ class SM2Tests(unittest.TestCase):
         key,lock,*_=fixture()
         manifest=json.loads((ROOT/'template/layout.json').read_text())
         self.assertEqual(len(lock),manifest['script_bytes'])
+        self.assertEqual(identify(lock),(1,public_key_hash160(key)))
         self.assertEqual(recognize(lock),public_key_hash160(key))
         for at in (0,49,70,1000,len(lock)-1):
             mutated=bytearray(lock); mutated[at]^=1
@@ -186,7 +207,13 @@ class SM2Tests(unittest.TestCase):
     def test_payment_vector_and_consecutive_payments(self):
         v=json.loads((ROOT/'template/spend-all.json').read_text())
         key,lock,parent,tx,pre,sig=fixture()
+        self.assertEqual(key.hex(),v['public_key'])
+        self.assertEqual(parent.txid(),v['parent_txid'])
+        self.assertEqual(tx.serialize().hex(),v['unsigned_tx_hex'])
         self.assertEqual(pre.hex(),v['preimage_hex']); self.assertEqual(sig.hex(),v['signature_hex'])
+        self.assertEqual(hash256(pre).hex(),v['message_hex'])
+        self.assertEqual(za(key).hex(),v['za_hex'])
+        self.assertEqual(message_digest(key,hash256(pre)).hex(),v['sm2_digest_hex'])
         signed=tx.with_script(0,current_input_unlock(tx,0,1000,key,sig))
         self.assertEqual(signed.inputs[0].script.hex(),v['script_sig_hex']); self.assertEqual(signed.txid(),v['signed_txid'])
         parent=Transaction((Input(b'\x33'*32,0),),(Output(10000,lock),))
@@ -200,6 +227,29 @@ class SM2Tests(unittest.TestCase):
         with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(1,b'\x51')],0,key,lambda *_: sig)
         with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(parent.outputs[0].value-100,b'\x51')],100,key,lambda *_: bytes(64))
         with self.assertRaises(ValueError): Transaction.parse(parent.serialize()+b'\0')
+
+    def test_release_defaults_to_pinned_v1(self):
+        manifest = json.loads((ROOT/'template/layout.json').read_text())
+        base_owner = bytes.fromhex(manifest['base_owner_hash160'])
+        lock = assemble(base_owner)
+        self.assertEqual(len(lock), 144925)
+        self.assertEqual(sha256(lock).hexdigest(), manifest['base_script_sha256'])
+        self.assertEqual(locking_script_from_owner_hash(base_owner), lock)
+        key = encode_public(mul(1))
+        self.assertEqual(identify(locking_script_from_public_key(key)), (1, public_key_hash160(key)))
+        cli = [sys.executable, str(ROOT/'reference/generate_lock.py'), '--owner-hash160', base_owner.hex()]
+        result = json.loads(subprocess.check_output(cli))
+        self.assertEqual(result['version'], 1)
+        self.assertEqual(result['script_sha256'], manifest['base_script_sha256'])
+        self.assertEqual(subprocess.check_output([*cli, '--format', 'raw']), lock)
+        self.assertEqual(subprocess.check_output([*cli, '--version', '1', '--format', 'raw']), lock)
+        for version in (0, 2, 3, 4):
+            with self.subTest(version=version):
+                for construct in (assemble, locking_script_from_owner_hash):
+                    with self.assertRaisesRegex(ValueError, 'unsupported P2PKH-SM2 template'):
+                        construct(base_owner, version=version)
+                self.assertNotEqual(subprocess.run([*cli, '--version', str(version)],
+                                                   capture_output=True).returncode, 0)
 
 
 if __name__=='__main__': unittest.main()

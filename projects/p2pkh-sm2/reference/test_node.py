@@ -44,9 +44,10 @@ class NodeTests(unittest.TestCase):
 
     def test_consecutive_payments(self):
         qa=encode_public(mul(1)); qb=encode_public(mul(7))
-        la=locking_script_from_public_key(qa); lb=locking_script_from_public_key(qb)
-        parent=Transaction((Input(b'\x22'*32,0),),(Output(10000,la),))
-        for hop,(d,q,dest) in enumerate(((1,qa,lb),(7,qb,la),(1,qa,lb))):
+        start=locking_script_from_public_key(qa)
+        parent=Transaction((Input(b'\x22'*32,0),),(Output(10000,start),))
+        for hop,(d,q,destination) in enumerate(zip((1,7,1),(qa,qb,qa),(qb,qa,qb))):
+            dest=locking_script_from_public_key(destination)
             signed=sign_payment(parent.serialize(),0,[Output(parent.outputs[0].value-100,dest)],100,q,lambda m,uid: fixture_sign(d,m,hop+2,uid))
             check(signed,[parent],0)
             self.assertEqual(len(signed.inputs[0].script),291)
@@ -61,6 +62,22 @@ class NodeTests(unittest.TestCase):
         check(signed,[other,parent],1)
         check(replace(signed,outputs=tuple(reversed(signed.outputs))),[other,parent],1,False)
         check(replace(signed,inputs=(replace(signed.inputs[0],txid=b'\x77'*32),signed.inputs[1])),[other,parent],1,False)
+
+    def test_two_sm2_inputs_and_two_sm2_outputs(self):
+        keys = (encode_public(mul(1)), encode_public(mul(7)))
+        locks = tuple(locking_script_from_public_key(key) for key in keys)
+        parents = tuple(Transaction((Input(bytes([index + 1]) * 32, 0),), (Output(1000, lock),))
+                        for index, lock in enumerate(locks))
+        tx = Transaction(tuple(Input(parent.txid_wire(), 0) for parent in parents),
+                         tuple(Output(900, lock) for lock in reversed(locks)))
+        for flag in (0x41, 0x61):
+            with self.subTest(flag=hex(flag)):
+                first = sign_input(tx, 0, parents[0].serialize(), keys[0],
+                                   lambda message, user_id: fixture_sign(1, message, 2, user_id), flag)
+                signed = sign_input(first, 1, parents[1].serialize(), keys[1],
+                                    lambda message, user_id: fixture_sign(7, message, 3, user_id), flag)
+                for index in (0, 1):
+                    check(signed, parents, index)
 
     def test_rejects_mutations(self):
         key,lock,parent,tx,pre,sig=fixture()

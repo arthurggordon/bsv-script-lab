@@ -31,7 +31,7 @@
 | 模板 | 锁定脚本 | 解锁脚本 |
 |---|---:|---:|
 | [P2PKH-R1](projects/p2pkh-r1/template/layout.json) | 59,582 字节 | 326 字节 |
-| [P2PKH-SM2 v2](projects/p2pkh-sm2/template/layout.json) | 199,777 字节 | 291 字节 |
+| [P2PKH-SM2 v1.0.0](projects/p2pkh-sm2/template/layout.json) | 144,925 字节 | 291 字节 |
 | [Lamport OTS](projects/lamport-ots/template/measurement.json) | 22,780 字节 | 8,357 字节 |
 
 Lamport 的锁定脚本包含公钥。普通 OTDA 路径的解锁脚本随参与签名的交易数据变化。
@@ -51,9 +51,9 @@ Lamport 的锁定脚本包含公钥。普通 OTDA 路径的解锁脚本随参与
 | `SINGLE` · 同索引输出（如存在） | `0x43` | `0xc3` | `0x63` | `0xe3` |
 
 <details>
-<summary><strong>P2PKH-SM2 v2 与无配对输出的 SINGLE</strong></summary>
+<summary><strong>P2PKH-SM2 v1.0.0 与无配对输出的 SINGLE</strong></summary>
 
-同一笔交易可在不同输入上混用 ForkID 与 OTDA。OTDA `SINGLE` 缺少同索引输出时，v2 通过补充预映像把 SM2 授权绑定到当前输入。已有 v1 输出仍可用 `0x41` 花费。
+同一笔交易可在不同输入上混用 ForkID 与 OTDA。OTDA `SINGLE` 缺少同索引输出时，脚本通过补充预映像把 SM2 授权绑定到当前输入。
 
 [SM2 交易绑定规则](projects/p2pkh-sm2/docs/spec.zh-CN.md#当前输入交易绑定) · [16 个签名向量](projects/p2pkh-sm2/template/sighash-modes.json)
 
