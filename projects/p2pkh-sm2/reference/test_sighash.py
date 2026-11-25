@@ -53,9 +53,9 @@ def signed_case(tx, parents, key, flag, nonce):
                       lambda msg, uid: fixture_sign(7, msg, nonce, uid), flag)
 
 
-def mode_cases(check):
+def mode_cases(check, *, template_version=2):
     """Run the same positive and negative complete spends on each independent engine."""
-    key, parents, tx = scenario()
+    key, parents, tx = scenario(template_version=template_version)
     alternative = replace(parents[0], locktime=777)
     for flag in sorted(SUPPORTED_TYPES):
         base = flag & 31
@@ -72,7 +72,7 @@ def mode_cases(check):
         check(replace(signed, inputs=(replace(tx.inputs[0], sequence=10),signed.inputs[1])),
               parents, 1, bool(flag & ANYONECANPAY) or base != 1)
         check(replace(signed, locktime=43), parents, 1, False)
-    key, parents, tx = scenario(False)
+    key, parents, tx = scenario(False, template_version=template_version)
     # Sign the altered witness messages with the actual test key. Rejection must
     # come from the lock or its native transaction binding, not a stale SM2 signature.
     companion = authorization(tx, 1, 1500, 0x63).preimage
@@ -108,10 +108,10 @@ def mode_cases(check):
     check(mixed,parents,1)
 
 
-def activation_cases(check):
+def activation_cases(check, *, template_version=2):
     # Use transaction version 1 on both sides so only activation flags and UTXO era differ.
     for paired in (True, False):
-        key, parents, tx = scenario(paired, version=1)
+        key, parents, tx = scenario(paired, version=1, template_version=template_version)
         for flag in sorted(SUPPORTED_TYPES) if paired else (0x43, 0xc3, 0x63, 0xe3):
             signed = signed_case(tx, parents, key, flag, 1100 + flag)
             check(signed, parents, 1, not bool(flag & CHRONICLE), chronicle_active=False, old_output=True)
@@ -121,13 +121,20 @@ def activation_cases(check):
 
 class ModeTests(unittest.TestCase):
     def test_complete_modes(self):
-        mode_cases(chain_check)
+        for version in (2, 3):
+            with self.subTest(template_version=version):
+                mode_cases(chain_check, template_version=version)
 
     def test_signing_vectors_against_engine(self):
-        vectors = json.loads((DIRECTORY/'sighash-modes.json').read_text())
+        for version, filename in ((2, 'sighash-modes.json'), (3, 'sighash-modes-v3.json')):
+            with self.subTest(template_version=version):
+                self.check_signing_vectors(version, filename)
+
+    def check_signing_vectors(self, version, filename):
+        vectors = json.loads((DIRECTORY/filename).read_text())
         self.assertEqual(len(vectors),16)
         for paired in (True, False):
-            key, parents, tx = scenario(paired)
+            key, parents, tx = scenario(paired, template_version=version)
             for flag in sorted(SUPPORTED_TYPES) if paired else (0x43,0xc3,0x63,0xe3):
                 with self.subTest(paired=paired, flag=hex(flag)):
                     auth=authorization(tx,1,1500,flag)

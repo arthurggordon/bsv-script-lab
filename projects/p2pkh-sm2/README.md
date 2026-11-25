@@ -31,3 +31,13 @@ python3 generate_lock.py --owner-hash160 000102030405060708090a0b0c0d0e0f1011121
 ```
 
 The canonical program is reproducibly generated from source; the manifest fixes its length, owner offset, base hash and fixed-byte fingerprint. Pass `--version 1` to reproduce the [original template](template/layout-v1.json).
+
+## 内部候选模板 v3
+
+v1、v2 和 v3 是内部模板版本。v3 将锁定脚本减至 **161,888 字节**，较 v2 少 **37,889 字节（19.0%）**。它沿用 v2 的签名覆盖范围与解锁格式，常规 ForkID 解锁脚本仍为 291 字节。生成器和钱包构造 API 默认选择 v2，显式传入 `--version 3` 或 `version=3` 可生成 v3。钱包签署已有输出时按完整脚本识别版本。以下命令从仓库根目录运行。
+
+```sh
+python3 projects/p2pkh-sm2/reference/generate_lock.py --version 3 --owner-hash160 000102030405060708090a0b0c0d0e0f10111213 --format raw > scriptPubKey-v3.bin
+```
+
+[v3 指纹](template/layout-v3.json) · [v3 付款向量](template/spend-all-v3.json) · [v3 交易覆盖向量](template/sighash-modes-v3.json)

@@ -60,8 +60,8 @@ def native_checker(tx,index,value):
     return check
 
 
-def fixture(d=1,k=2):
-    key=encode_public(mul(d)); lock=locking_script_from_public_key(key)
+def fixture(d=1,k=2,*,template_version=2):
+    key=encode_public(mul(d)); lock=locking_script_from_public_key(key,version=template_version)
     funding=Transaction((Input(b'\x22'*32,0),),(Output(1000,lock),))
     tx=Transaction((Input(funding.txid_wire(),0),),(Output(900,b'\x51'),))
     pre=preimage_all(tx,0,1000); sig=fixture_sign(d,hash256(pre),k)
@@ -92,17 +92,20 @@ class SM2Tests(unittest.TestCase):
         rng=random.Random(4818)
         for n in (0,3,55,56,63,64,65,82,119,120,127,128,210):
             message=rng.randbytes(n)
-            with self.subTest(length=n):
-                stack,alt=evaluate(hash_script(n),[b'lower',message])
-                self.assertEqual(stack,[b'lower',sm3(message)]); self.assertEqual(alt,[])
+            for optimized in (False,True):
+                with self.subTest(length=n,optimized=optimized):
+                    stack,alt=evaluate(hash_script(n,optimized=optimized),[b'lower',message])
+                    self.assertEqual(stack,[b'lower',sm3(message)]); self.assertEqual(alt,[])
         self.assertEqual(sm3(b'abc').hex(),'66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0')
 
     def test_sm3_fixed_prefix_midstate(self):
         for d in (1,2,19,N-2):
             key=encode_public(mul(d)); prefix=b'\0\x80'+USER_ID+be32(A)+be32(B)+be32(G[0])+be32(G[1])
             state=compress(compress(IV,prefix[:64]),prefix[64:128])
-            stack,alt=evaluate(hash_script(82,state,128),[prefix[128:]+key[1:]])
-            self.assertEqual(stack,[za(key)]); self.assertEqual(alt,[])
+            for optimized in (False,True):
+                with self.subTest(key=d,optimized=optimized):
+                    stack,alt=evaluate(hash_script(82,state,128,optimized=optimized),[prefix[128:]+key[1:]])
+                    self.assertEqual(stack,[za(key)]); self.assertEqual(alt,[])
 
     def test_openssl_standard_and_round_trip(self):
         self.assertIsNotNone(shutil.which('openssl'),'OpenSSL with SM2 is required')
@@ -126,22 +129,26 @@ class SM2Tests(unittest.TestCase):
             self.assertTrue(valid_script(lock,items,signed))
 
     def test_canonical_recognition(self):
-        key,lock,*_=fixture()
-        manifest=json.loads((ROOT/'template/layout.json').read_text())
-        self.assertEqual(len(lock),manifest['script_bytes'])
-        self.assertEqual(recognize(lock),public_key_hash160(key))
-        for at in (0,49,70,1000,len(lock)-1):
-            mutated=bytearray(lock); mutated[at]^=1
-            self.assertIsNone(recognize(bytes(mutated)))
-        self.assertIsNone(recognize(lock[:-1])); self.assertIsNone(recognize(lock+b'\0'))
+        for version, filename in ((1,'layout-v1.json'),(2,'layout.json'),(3,'layout-v3.json')):
+            with self.subTest(template_version=version):
+                key,lock,*_=fixture(template_version=version)
+                manifest=json.loads((ROOT/'template'/filename).read_text())
+                self.assertEqual(len(lock),manifest['script_bytes'])
+                self.assertEqual(identify(lock),(version,public_key_hash160(key)))
+                self.assertEqual(recognize(lock),public_key_hash160(key))
+                for at in (0,49,70,1000,len(lock)-1):
+                    mutated=bytearray(lock); mutated[at]^=1
+                    self.assertIsNone(recognize(bytes(mutated)))
+                self.assertIsNone(recognize(lock[:-1])); self.assertIsNone(recognize(lock+b'\0'))
         with self.assertRaises(ValueError): locking_script_from_owner_hash(bytes(19))
         r1=bytes.fromhex('046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5')
         with self.assertRaises(ValueError): public_key_hash160(r1)
 
     def test_full_script_random_keys(self):
-        for d,k in ((1,2),(7,19),(19,7),(N-2,N-1),(12345,67890)):
-            key,lock,parent,tx,pre,sig=fixture(d,k)
-            with self.subTest(d=d): self.assertTrue(valid_script(lock,[pre,key,sig],tx))
+        for version in (2,3):
+            for d,k in ((1,2),(7,19),(19,7),(N-2,N-1),(12345,67890)):
+                key,lock,parent,tx,pre,sig=fixture(d,k,template_version=version)
+                with self.subTest(d=d,template_version=version): self.assertTrue(valid_script(lock,[pre,key,sig],tx))
 
     def test_script_rejects_invalid_signature_and_key(self):
         key,lock,parent,tx,pre,sig=fixture()
@@ -205,6 +212,25 @@ class SM2Tests(unittest.TestCase):
         with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(1,b'\x51')],0,key,lambda *_: sig)
         with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(parent.outputs[0].value-100,b'\x51')],100,key,lambda *_: bytes(64))
         with self.assertRaises(ValueError): Transaction.parse(parent.serialize()+b'\0')
+
+    def test_v3_payment_vector(self):
+        vector=json.loads((ROOT/'template/spend-all-v3.json').read_text())
+        key,lock,parent,tx,pre,sig=fixture(template_version=3)
+        self.assertEqual(key.hex(),vector['public_key'])
+        self.assertEqual(parent.txid(),vector['parent_txid'])
+        self.assertEqual(tx.serialize().hex(),vector['unsigned_tx_hex'])
+        self.assertEqual(pre.hex(),vector['preimage_hex'])
+        self.assertEqual(hash256(pre).hex(),vector['message_hex'])
+        self.assertEqual(za(key).hex(),vector['za_hex'])
+        self.assertEqual(message_digest(key,hash256(pre)).hex(),vector['sm2_digest_hex'])
+        self.assertEqual(sig.hex(),vector['signature_hex'])
+        witness=current_input_unlock(tx,0,1000,key,sig,version=3)
+        self.assertEqual(len(witness),291)
+        self.assertEqual(witness.hex(),vector['script_sig_hex'])
+        signed=sign_payment(parent.serialize(),0,tx.outputs,100,key,lambda *_: sig)
+        self.assertEqual(signed,tx.with_script(0,witness))
+        self.assertEqual(signed.txid(),vector['signed_txid'])
+        self.assertTrue(valid_script(lock,[pre,key,sig],signed))
 
 
 if __name__=='__main__': unittest.main()

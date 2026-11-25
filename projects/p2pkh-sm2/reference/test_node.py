@@ -37,20 +37,27 @@ def check(tx, parents, index, valid=True):
 
 class NodeTests(unittest.TestCase):
     def test_sighash_coverage(self):
-        mode_cases(check_node)
+        for version in (2,3):
+            with self.subTest(template_version=version):
+                mode_cases(check_node,template_version=version)
 
     def test_chronicle_flags(self):
-        activation_cases(check_node)
+        for version in (2,3):
+            with self.subTest(template_version=version):
+                activation_cases(check_node,template_version=version)
 
     def test_consecutive_payments(self):
         qa=encode_public(mul(1)); qb=encode_public(mul(7))
-        la=locking_script_from_public_key(qa); lb=locking_script_from_public_key(qb)
-        parent=Transaction((Input(b'\x22'*32,0),),(Output(10000,la),))
-        for hop,(d,q,dest) in enumerate(((1,qa,lb),(7,qb,la),(1,qa,lb))):
-            signed=sign_payment(parent.serialize(),0,[Output(parent.outputs[0].value-100,dest)],100,q,lambda m,uid: fixture_sign(d,m,hop+2,uid))
-            check(signed,[parent],0)
-            self.assertEqual(len(signed.inputs[0].script),291)
-            parent=signed
+        start=locking_script_from_public_key(qa)
+        for versions in ((2,2,2),(3,3,2)):
+            with self.subTest(destination_versions=versions):
+                parent=Transaction((Input(b'\x22'*32,0),),(Output(10000,start),))
+                for hop,(d,q,destination,version) in enumerate(zip((1,7,1),(qa,qb,qa),(qb,qa,qb),versions)):
+                    dest=locking_script_from_public_key(destination,version=version)
+                    signed=sign_payment(parent.serialize(),0,[Output(parent.outputs[0].value-100,dest)],100,q,lambda m,uid: fixture_sign(d,m,hop+2,uid))
+                    check(signed,[parent],0)
+                    self.assertEqual(len(signed.inputs[0].script),291)
+                    parent=signed
 
     def test_multi_input_and_multiple_outputs(self):
         key,lock,parent,_,_,_=fixture()
@@ -63,7 +70,12 @@ class NodeTests(unittest.TestCase):
         check(replace(signed,inputs=(replace(signed.inputs[0],txid=b'\x77'*32),signed.inputs[1])),[other,parent],1,False)
 
     def test_rejects_mutations(self):
-        key,lock,parent,tx,pre,sig=fixture()
+        for version in (2,3):
+            with self.subTest(template_version=version):
+                self.check_rejects_mutations(version)
+
+    def check_rejects_mutations(self, version):
+        key,lock,parent,tx,pre,sig=fixture(template_version=version)
         signed=tx.with_script(0,push(pre)+push(key)+push(sig))
         check(signed,[parent],0)
         check(replace(signed,outputs=(Output(899,b'\x51'),)),[parent],0,False)
@@ -78,7 +90,7 @@ class NodeTests(unittest.TestCase):
         check(tx.with_script(0,push(pre)+push(encode_public(mul(2)))+push(sig)),[parent],0,False)
         for malformed in (b'\x04'+bytes(64),b'\x04'+be32(P)+key[33:],b'\x03'+key[1:]):
             owner=new('ripemd160',sha256(malformed).digest()).digest()
-            bad_parent=replace(parent,outputs=(Output(1000,locking_script_from_owner_hash(owner)),))
+            bad_parent=replace(parent,outputs=(Output(1000,locking_script_from_owner_hash(owner,version=version)),))
             bad_tx=replace(tx,inputs=(Input(bad_parent.txid_wire(),0),))
             bad_pre=preimage_all(bad_tx,0,1000)
             check(bad_tx.with_script(0,push(bad_pre)+push(malformed)+push(fixture_sign(1,hash256(bad_pre),3))),[bad_parent],0,False)

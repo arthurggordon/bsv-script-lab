@@ -1,0 +1,28 @@
+{
+  "template": "P2PKH-SM2",
+  "version": 3,
+  "script_bytes": 161888,
+  "owner_hash160": {
+    "offset": 168,
+    "length": 20
+  },
+  "base_owner_hash160": "0000000000000000000000000000000000000000",
+  "base_script_sha256": "771058ada5e86516339450f86cc734635f4449c6a2ace8c64220229f2bef4cfe",
+  "fixed_bytes_sha256": "2a1be21d96dddf3301a226ac286dd6dfb588d6adf082c2f411ff5f1c23a5167c",
+  "supported_sighash_types": [
+    "41",
+    "42",
+    "43",
+    "61",
+    "62",
+    "63",
+    "c1",
+    "c2",
+    "c3",
+    "e1",
+    "e2",
+    "e3"
+  ],
+  "sm2_user_id_hex": "31323334353637383132333435363738",
+  "generator": "../reference/generate_lock.py"
+}

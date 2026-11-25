@@ -3,7 +3,7 @@ from functools import cache
 from hashlib import sha256
 import json
 from pathlib import Path
-from assemble import assemble
+from assemble import TEMPLATE_VERSIONS, assemble
 from sighash import authorization
 from sm2 import USER_ID,hash256,public_key_hash160,verify
 from shared.script import push
@@ -14,9 +14,9 @@ MANIFEST=Path(__file__).resolve().parents[1]/'template/layout.json'
 
 @cache
 def _canonical(version=2):
-    if version not in (1, 2):
+    if version not in TEMPLATE_VERSIONS:
         raise ValueError('unknown P2PKH-SM2 version')
-    manifest = MANIFEST if version == 2 else MANIFEST.with_name('layout-v1.json')
+    manifest = MANIFEST if version == 2 else MANIFEST.with_name(f'layout-v{version}.json')
     layout=json.loads(manifest.read_text())
     raw=assemble(bytes(20), version)
     if len(raw)!=layout['script_bytes'] or sha256(raw).hexdigest()!=layout['base_script_sha256']:
@@ -41,7 +41,7 @@ def identify(raw):
     """Return (version, owner) after verifying the complete locking program."""
     if not isinstance(raw, bytes):
         return None
-    for version in (2, 1):
+    for version in reversed(TEMPLATE_VERSIONS):
         template, start = _canonical(version)
         if (len(raw) == len(template) and raw[:start] == template[:start]
                 and raw[start+20:] == template[start+20:]):
@@ -57,7 +57,7 @@ def recognize(raw):
 def current_input_unlock(tx, index, previous_amount, key, signature, sighash_type=0x41,
                          *, chronicle_active=True, version=2):
     public_key_hash160(key)
-    if version not in (1, 2) or (version == 1 and sighash_type != 0x41):
+    if version not in TEMPLATE_VERSIONS or (version == 1 and sighash_type != 0x41):
         raise ValueError('sighash type unavailable for this template version')
     auth = authorization(tx, index, previous_amount, sighash_type, chronicle_active=chronicle_active)
     return _encode_unlock(auth, key, signature)

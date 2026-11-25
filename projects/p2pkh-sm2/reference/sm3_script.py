@@ -11,11 +11,16 @@ def rol(x,n):
     return ((x<<n)|(x>>(32-n)))&MASK
 
 
-def compress(state, block):
+def message_schedule(block):
     w=[int.from_bytes(block[i:i+4],'big') for i in range(0,64,4)]
     for j in range(16,68):
         x=w[j-16]^w[j-9]^rol(w[j-3],15)
         w.append(x^rol(x,15)^rol(x,23)^rol(w[j-13],7)^w[j-6])
+    return w
+
+
+def compress(state, block):
+    w=message_schedule(block)
     a,b,c,d,e,f,g,h=state
     for j in range(64):
         ss1=rol((rol(a,12)+e+rol(0x79cc4519 if j<16 else 0x7a879d8a,j))&MASK,7)
@@ -43,22 +48,35 @@ REVERSE4=asm(' '.join(['OP_1 OP_SPLIT OP_SWAP OP_TOALTSTACK']*3+['OP_FROMALTSTAC
 
 
 class Builder:
-    def __init__(self): self.code=bytearray(); self.stack=['data']
+    def __init__(self, optimized):
+        self.code=bytearray()
+        self.stack=['data']
+        self.optimized=optimized
+
     def raw(self,s): self.code.extend(asm(s))
-    def expr(self,e):
+    def expr(self,e,*,binary=False):
+        # A five-byte word keeps the Script sign bit clear and gives all
+        # SM3 bitwise operands the same width. Only arithmetic needs decoding.
         if isinstance(e,int): self.code.extend(number(e))
         elif isinstance(e,str): self.code.extend(number(len(self.stack)-1-self.stack.index(e))+asm('OP_PICK'))
         elif e[0]=='ROT':
             self.expr(e[1]); n=e[2]
             self.code.extend(asm('OP_DUP')+number(1<<n)+asm('OP_MUL')+number(1<<32)+asm('OP_MOD OP_SWAP')+number(1<<(32-n))+asm('OP_DIV OP_ADD'))
+            if binary: self.raw('5 OP_NUM2BIN')
             return
         else:
             op,x,y=e
-            self.expr(x); self.expr(y)
-            if op in ('XOR','AND','OR'):
+            bitwise=op in ('XOR','AND','OR')
+            binary_operands=bitwise and self.optimized
+            self.expr(x,binary=binary_operands); self.expr(y,binary=binary_operands)
+            if bitwise and not self.optimized:
                 self.raw('5 OP_NUM2BIN OP_SWAP 5 OP_NUM2BIN OP_'+op+' OP_BIN2NUM')
-            else: self.raw('OP_'+op)
+            else:
+                self.raw('OP_'+op)
+                if bitwise and not binary: self.raw('OP_BIN2NUM')
+                if binary and not bitwise: self.raw('5 OP_NUM2BIN')
             self.stack.pop(); return
+        if binary: self.raw('5 OP_NUM2BIN')
         self.stack.append(None)
     def assign(self,name,e):
         self.expr(e)
@@ -75,34 +93,53 @@ class Builder:
 
 
 @cache
-def hash_script(length, state=IV, processed=0):
+def hash_script(length, state=IV, processed=0, *, optimized=False):
     """Top item is exactly length bytes. Replace it with SM3, preserving lower stack.
 
     state is a known fixed-prefix midstate; processed must be whole blocks.
+    The default emits the original bytecode used by templates v1 and v2.
     """
     if processed%64: raise ValueError('midstate must start on a block boundary')
-    b=Builder()
+    b=Builder(optimized)
     b.code.extend(asm('OP_SIZE')+number(length)+asm('OP_NUMEQUALVERIFY'))
     total=processed+length
     padding=b'\x80'+bytes((55-total)%64)+(total*8).to_bytes(8,'big')
     b.code.extend(push(padding)+asm('OP_CAT'))
     for i,v in enumerate(state): b.assign('h'+str(i),v)
     for offset in range(0,length+len(padding),64):
-        for j in range(16): b.word('w'+str(j),offset+j*4)
-        for j in range(16,68):
-            x=xor(xor('w'+str(j-16),'w'+str(j-9)),rot('w'+str(j-3),15))
-            b.assign('w'+str(j),xor(xor(perm(x,15,23),rot('w'+str(j-13),7)),'w'+str(j-6)))
+        static_padding=optimized and offset>=length
+        if static_padding:
+            # The schedule of a padding-only block is independent of its
+            # chaining state. The 64 compression rounds still run in Script.
+            start=offset-length
+            words=message_schedule(padding[start:start+64])
+        else:
+            words=[f'w{j}' for j in range(68)]
+            for j in range(16): b.word(words[j],offset+j*4)
+            for j in range(16,68):
+                x=xor(xor(words[j-16],words[j-9]),rot(words[j-3],15))
+                if optimized:
+                    b.assign('expansion_mix',x)
+                    x='expansion_mix'
+                b.assign(words[j],xor(xor(perm(x,15,23),rot(words[j-13],7)),words[j-6]))
+                if optimized: b.drop('expansion_mix')
         for i,c in enumerate('abcdefgh'): b.assign(c,'h'+str(i))
         for j in range(64):
-            b.assign('ss1',rot(plus(rot('a',12),'e',rol(0x79cc4519 if j<16 else 0x7a879d8a,j)),7))
-            b.assign('ss2',xor('ss1',rot('a',12)))
+            a_rot12=rot('a',12)
+            if optimized:
+                b.assign('a_rot12',a_rot12)
+                a_rot12='a_rot12'
+            b.assign('ss1',rot(plus(a_rot12,'e',rol(0x79cc4519 if j<16 else 0x7a879d8a,j)),7))
+            b.assign('ss2',xor('ss1',a_rot12))
+            if optimized: b.drop('a_rot12')
             ff=xor(xor('a','b'),'c') if j<16 else bor(bor(band('a','b'),band('a','c')),band('b','c'))
             gg=xor(xor('e','f'),'g') if j<16 else bor(band('e','f'),band(xor('e',MASK),'g'))
-            b.assign('tt1',plus(ff,'d','ss2',xor('w'+str(j),'w'+str(j+4))))
-            b.assign('tt2',plus(gg,'h','ss1','w'+str(j)))
+            cross_word=words[j]^words[j+4] if static_padding else xor(words[j],words[j+4])
+            b.assign('tt1',plus(ff,'d','ss2',cross_word))
+            b.assign('tt2',plus(gg,'h','ss1',words[j]))
             for name,expr in [('d','c'),('c',rot('b',9)),('b','a'),('a','tt1'),('h','g'),('g',rot('f',19)),('f','e'),('e',perm('tt2',9,17))]: b.assign(name,expr)
         for i,c in enumerate('abcdefgh'): b.assign('h'+str(i),xor('h'+str(i),c))
-        for name in [*(f'w{j}' for j in range(68)),*'abcdefgh','ss1','ss2','tt1','tt2']: b.drop(name)
+        for name in [*(() if static_padding else words),*'abcdefgh','ss1','ss2','tt1','tt2']: b.drop(name)
     b.drop('data')
     for i in range(8):
         b.expr('h'+str(i))

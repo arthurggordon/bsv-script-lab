@@ -1,6 +1,7 @@
 """Verify SignedData payment interop without changing the locking template."""
 
 import json
+from itertools import product
 import os
 from pathlib import Path
 import subprocess
@@ -98,10 +99,10 @@ class SignedDataTests(unittest.TestCase):
         signer_identifier = bytes.fromhex(identity['signer_identifier_hex'])
         self.assertEqual(identity['signer_version'], 2)
 
-        for flag, detached in ((0x41, False), (0x61, True)):
-            with self.subTest(flag=hex(flag), detached=detached):
+        for version, (flag, detached) in product((2, 3), ((0x41, False), (0x61, True))):
+            with self.subTest(template_version=version, flag=hex(flag), detached=detached):
                 parent = Transaction((Input(b'\xa7' * 32, 0),),
-                                     (Output(1000, locking_script_from_public_key(key)),))
+                                     (Output(1000, locking_script_from_public_key(key, version=version)),))
                 tx = Transaction((Input(parent.txid_wire(), 0),), (Output(900, b'\x51'),))
 
                 def provider(message, user_id):

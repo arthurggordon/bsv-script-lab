@@ -32,6 +32,14 @@ For this revision, the 112 complete-input coverage cases were run through both p
 
 The [standard vector](../template/sm2-standard.json), [payment vector](../template/spend-all.json), and [layout manifest](../template/layout.json) are checked in. Raw lock bytes are generated on demand and checked against the pinned manifest hash.
 
+### Internal v3 candidate
+
+v3 emits 161,888 bytes. It shares repeated terms within SM3 compression and message expansion, keeps consecutive bit operations in five-byte form, and precomputes the message schedule for a block containing only padding. The script executes all compression rounds and uses the v2 sighash and transaction-binding paths. The generator selects the original v1 and v2 bytecode for those versions.
+
+Select `--version 3` in the generator, or pass `version=3` to the Python locking script constructors. The wallet identifies v1, v2 and v3 by matching the canonical bytes around the owner slot. The v3 fixture includes an independent engine comparison for each of its 16 preimages, a complete ForkID payment vector, and the same complete-input and activation suites used for v2. The Go SignedData interoperability tests spend both v2 and v3 outputs.
+
+[v3 manifest](../template/layout-v3.json) · [v3 payment vector](../template/spend-all-v3.json) · [v3 mode vectors](../template/sighash-modes-v3.json)
+
 ## SignedData payment interop
 
 [GB/T 35275-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=28A18B702BDC318803E598F5E502E2CC)
