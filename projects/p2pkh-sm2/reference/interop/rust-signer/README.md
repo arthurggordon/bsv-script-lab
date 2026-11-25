@@ -1,26 +1,42 @@
-# Independent GB/T 35275-2026 Rust signer
+# Rust test signer for GB/T 35275-2026
 
-This test-only process uses RustCrypto `sm2` for SM2/SM3 signing and `der`
-for ASN.1 encoding. It produces a direct-signature `SignedData` envelope
-with outer version 1, inner `SignerInfo.version = 2`, and the template's
-fixed SM2 user ID `1234567812345678`.
+[简体中文](README.zh-CN.md) · [Reference guide](../../README.md)
 
-The command takes `-message HEX -key TEST_KEY_HEX [-detached]` and prints
-`envelope_hex`, `public_key_hex`, `signer_identifier_hex` and `signer_version`
-as JSON. The issuer retains the original fixture's common name
-`Independent Go Signer` and serial 1 so the pinned DER identifier stays
-the same. Use a dedicated test key. The key is passed on the command line.
+The Rust CLI uses RustCrypto `sm2` for SM2/SM3 signing and `der` for ASN.1
+encoding. It emits a direct-signature `SignedData` envelope with outer
+version `1`, inner `SignerInfo.version = 2`, and the fixed SM2 user ID
+`1234567812345678`. Its fixture uses the historical issuer common name
+`Independent Go Signer` and serial number `1` to preserve the DER signer
+identifier shared with the [Python test signer](../python-signer/README.md).
 
-From the repository root, build the signer and run its focused tests:
+## Build and sign a test message
+
+Run from the repository root. The example uses a public test key.
 
 ```sh
 signer_dir="$PWD/projects/p2pkh-sm2/reference/interop/rust-signer"
 cargo build --locked --release --manifest-path "$signer_dir/Cargo.toml" --target-dir "$signer_dir/target"
+"$signer_dir/target/release/sm2-signed-data-signer" \
+  -message 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
+  -key 0000000000000000000000000000000000000000000000000000000000000001
+```
+
+Add `-detached` to omit the message from the envelope. Standard output is a
+JSON object with the fields `envelope_hex`, `public_key_hex`,
+`signer_identifier_hex`, and `signer_version`. Use dedicated test keys
+because the CLI takes the key as a command-line argument.
+
+## Verify the output
+
+Install the [reference dependencies](../../requirements.txt) and use OpenSSL
+with SM2 and SM3 support. From the repository root, keep `signer_dir` as
+defined above and run the Rust signer tests.
+
+```sh
 SM2_SIGNED_DATA_SIGNER="$signer_dir/target/release/sm2-signed-data-signer" \
   PYTHONPATH=.:projects/p2pkh-sm2/reference python -m unittest -v test_signed_data.IndependentSignedDataTests
 ```
 
-The focused tests require the [pinned reference dependencies](../../requirements.txt)
-and OpenSSL with SM2/SM3 support. Run `bash projects/p2pkh-sm2/reference/verify.sh`
-to build the signer automatically and replay payments from both this signer
-and the [Python signer](../python-signer/README.md) on BSV Node 1.2.3.
+Run `bash projects/p2pkh-sm2/reference/verify.sh` to build the signer
+automatically and replay transactions signed by both CLIs through BSV Node
+1.2.3 and chain-gang.

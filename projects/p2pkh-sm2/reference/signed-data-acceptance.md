@@ -1,11 +1,14 @@
 # SM2 SignedData acceptance evidence
 
-This fixture checks which envelopes the payment adapter accepts and verifies
-general v2 signatures against trusted signer keys. The payment profile uses
-one direct signature over the approved transaction message. Both entry
-points enforce outer `SignedData.version = 1` and inner `SignerInfo.version = 2`.
-The general verifier requires one or more signers and supports both direct
-and signed-attribute signatures. [GB/T 35275-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=28A18B702BDC318803E598F5E502E2CC)
+[简体中文](signed-data-acceptance.zh-CN.md) · [Reference guide](README.md)
+
+This record describes what the payment adapter, general signature verifier,
+and certificate revocation assessment check. The payment adapter verifies
+a single direct signature over the approved transaction message. The general
+verifier accepts one or more trusted signers and supports direct signatures
+and signed attributes. Both signature entry points require outer
+`SignedData.version = 1` and inner `SignerInfo.version = 2`.
+[GB/T 35275-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=28A18B702BDC318803E598F5E502E2CC)
 
 ## Acceptance decisions
 

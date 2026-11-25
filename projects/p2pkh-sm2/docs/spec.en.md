@@ -1,10 +1,12 @@
 # P2PKH-SM2 v1.0.0
 
-Experimental specification · BRC number unassigned · [中文](spec.zh-CN.md)
+[简体中文](spec.zh-CN.md) · [Project overview](../README.md)
+
+This specification describes the v1.0.0 baseline. A BRC number has yet to be assigned.
 
 ## Payment and authorization
 
-A payer creates an output from the recipient's HASH160 of a 65-byte uncompressed curveSM2 public key (`04 || X_BE32 || Y_BE32`). On spend, the owner reveals that key and provides one SM2 signature for the current input. The witness never includes a parent transaction or an earlier signature.
+A payer creates an output from the recipient's HASH160 of a 65-byte uncompressed public key on curveSM2 (`04 || X_BE32 || Y_BE32`). On spend, the owner reveals that key and provides one SM2 signature for the current input. The witness never includes a parent transaction or an earlier signature.
 
 The program uses existing BSV Script opcodes. It computes SM3 and verifies SM2 in Script; native `OP_CHECKSIG` remains secp256k1 ECDSA and binds the supplied transaction preimage through the public PUSHTX construction. Only the SM2 private key is required from the owner.
 
@@ -20,11 +22,26 @@ e  = SM3(ZA || H)
 
 A standard SM2 message-sign API receives **H and IDA**. An explicitly prehashed SM2 API receives **e**. Do not hash e again through a message API. The script recomputes ZA and e; it does not accept either as a trusted witness. The first 128 bytes of the ZA input are fixed, so their SM3 midstate is a program constant. The remaining two ZA compression blocks and both message-hash blocks execute on chain.
 
-The curve, public-key check and signature equation are those of SM2, not P-256 ECDSA. Reject malformed keys, coordinates outside `[0,p)`, points off curve, signature scalars outside `[1,n)`, `t=(r+s) mod n=0`, and an infinite `R=sG+tQ`. Require `r=(e+x(R)) mod n`. With projective coordinates, test the two possible x candidates `(r-e) mod n` and that value plus n (only when below p). The implementation relies on `p<2n`. No inverse witness is required. Do not apply ECDSA low-S normalization to SM2 signatures.
+## SM2 verification
+
+The verifier requires a valid point on curveSM2 with coordinates in `[0,p)`.
+The curve has cofactor 1. Decode the signature as two 32-byte big-endian
+integers, then check the following conditions.
+
+1. Both scalars are in `[1,n)`.
+2. `t = (r + s) mod n` is nonzero.
+3. `R = sG + tQ` is a finite point.
+4. `r = (e + x(R)) mod n`.
+
+The script uses four-bit windows and projective coordinates. Set
+`x₀ = (r - e) mod n`. Check `X = x₀ Z mod p` or, if `x₀ + n < p`,
+`X = (x₀ + n) Z mod p`. These are the only candidates because `p < 2n`.
+The witness supplies no inverse. Keep the original SM2 value of `s`.
+Replacing it with `n - s` can invalidate the signature.
 
 ## Transaction scope and bytes
 
-Each input selects a base mode, optional ANYONECANPAY (ACP), and digest algorithm. The BSV fork value in the upper 24 bits is zero. All twelve types set the ForkID bit. Chronicle permits the additional OTDA bit `0x20` at spend time, including when the spent output predates Chronicle.
+Each input selects a base mode, optional ANYONECANPAY (ACP), and digest algorithm. The table lists the hexadecimal type byte used by native transaction signing. The preimage carries the type as a four-byte little-endian value with the upper 24 bits set to zero. All twelve types set the ForkID bit. Chronicle permits the additional OTDA bit `0x20` at spend time, including when the spent output predates Chronicle.
 
 | Output coverage | BIP143 | BIP143 + ACP | Chronicle OTDA | OTDA + ACP |
 |---|---|---|---|---|
@@ -43,7 +60,7 @@ amountLE64 || sequenceLE32 || hashOutputs || locktimeLE32 || typeLE32
 
 OTDA serializes the selected inputs and outputs in the original format and appends the four-byte type. It omits the spent amount. Under paired SINGLE, each earlier output is a null placeholder (`ffffffffffffffff00`), including with ACP. No complete parent transaction enters the witness.
 
-**Unpaired SINGLE.** BIP143 uses zero hashOutputs. Native OTDA instead returns the constant `uint256(1)`; that digest alone carries no transaction authorization. For `63` or `e3`, the SM2 owner signs the BIP143 SINGLE companion (`43` or `c3`). Its scriptCode is `ad68abac`, including the unexecuted separator. The lock checks the companion’s zero hashOutputs, verifies its native binding against the actual input and separately checks the original OTDA type against the native constant. Adding a paired output or changing the current outpoint invalidates this authorization. With ACP other inputs can still change.
+**Unpaired SINGLE.** BIP143 uses zero hashOutputs. Native OTDA returns the constant `uint256(1)` in this case, which leaves the current input unbound. For `63` or `e3`, the SM2 owner signs the BIP143 SINGLE companion (`43` or `c3`). Its scriptCode is `ad68abac`, including the unexecuted separator. The lock checks the companion’s zero hashOutputs, verifies its native binding against the actual input and separately checks the original OTDA type against the native constant. Adding a paired output or changing the current outpoint invalidates this authorization. With ACP other inputs can still change.
 
 | Item | Encoding |
 |---|---|
@@ -53,7 +70,7 @@ OTDA serializes the selected inputs and outputs in the original format and appen
 | Ordinary OTDA scriptSig | `len(push(P)) + 131` bytes, transaction-dependent |
 | Unpaired OTDA SINGLE scriptSig | 294 bytes (161-byte companion P) |
 
-Recognition checks all fixed program bytes. [The layout](../template/layout.json) pins the length, owner offset, zero-owner program hash and fixed-byte fingerprint. Generate raw bytes with [generate_lock.py](../reference/generate_lock.py). Expanded hex is deliberately reproducible rather than duplicated in source control.
+Recognition compares every fixed byte of the locking program. The layout manifest records the length, owner offset, SHA-256 of the zero-owner script, and the fingerprint of the fixed bytes. The generator can write raw bytes or hex. [Layout manifest](../template/layout.json) · [Script generator](../reference/generate_lock.py)
 
 ## Integration
 
@@ -61,12 +78,18 @@ Recognition checks all fixed program bytes. [The layout](../template/layout.json
 
 `sign_payment` uses `0x41`. For a prepared transaction, call `sign_input(tx, index, funding_raw, key, signer, sighash_type, chronicle_active=active)`. The wallet matches the funding outpoint and signs only that input. `chronicle_active` defaults to `True`; callers handling pre-activation spends must supply `False`. The wallet rejects OTDA before invoking the signer in that context. [Mode vectors](../template/sighash-modes.json) cover all twelve paired modes and four unpaired SINGLE cases.
 
-The caller authenticates the funding transaction and confirmation state and obtains approval of recipients, change and fees. Secret-key signing belongs in an external signer. The pure-Python arithmetic and explicit-nonce fixture signer are not constant-time production signing implementations. The identity string is an algorithm input; it is not identity certification or X.509 validation.
+The caller authenticates the funding transaction and confirmation state and obtains approval of recipients, change and fees. Secret-key signing belongs in an external signer. The pure-Python arithmetic and explicit-nonce fixture signer are not constant-time production signing implementations. Treat the SM2 user ID as an algorithm input. Establish signer identity and certificate trust separately.
 
 ## Evidence and boundaries
 
 Tests cover the published SM2 vector, OpenSSL signing, SM3 block boundaries and fixed-prefix hashing, invalid points and scalars, wrong identities, t=0, infinity, the rare x≥n branch, transaction/preimage substitution and three consecutive payments. Local opcode evaluation is a development harness without consensus flags or resource limits. [Complete-input tests](../reference/test_node.py) separately exercise BSV Node 1.2.3 and pinned chain-gang with explicit UTXOs and flags.
 
-Successful regtest verification does not establish mainnet activation, relay policy, hardware integration or fee suitability. The large lock must be priced against actual miner policy. This is an experimental implementation, not cryptographic product certification.
+Regtest results cover script verification under the supplied flags. Mainnet activation, relay policy, fees, and hardware integration depend on the deployment environment.
 
-Sources: [RFC 8998](https://www.rfc-editor.org/rfc/rfc8998.html#section-3.2.1), [OpenSSL standard vector](https://github.com/openssl/openssl/blob/openssl-3.5.0/test/sm2_internal_test.c), [SM3 Internet-Draft](https://datatracker.ietf.org/doc/html/draft-sca-cfrg-sm3-02), [WP1605](https://nchain.com/wp-content/uploads/2022/03/WP1605_PUSHTX-and-its-Building-Blocks.pdf) and [BRC-21](https://github.com/bsv-blockchain/BRCs/blob/master/scripts/0021.md). The a=−3 projective arithmetic/window structure and native public signature construction derive from this repository's [R1 project](../../p2pkh-r1/README.md), with independent SM2 constants and verification equation.
+## Sources
+
+- RFC 8998 specifies the curve parameters and SM2 identity semantics. [RFC 8998 §3.2.1](https://www.rfc-editor.org/rfc/rfc8998.html#section-3.2.1)
+- The OpenSSL test suite includes the published SM2 test vectors. [OpenSSL standard vector](https://github.com/openssl/openssl/blob/openssl-3.5.0/test/sm2_internal_test.c)
+- The SM3 Internet-Draft describes the compression functions and message expansion. [SM3 Internet-Draft](https://datatracker.ietf.org/doc/html/draft-sca-cfrg-sm3-02)
+- PUSHTX uses a public transaction-binding construction. [WP1605](https://nchain.com/wp-content/uploads/2022/03/WP1605_PUSHTX-and-its-Building-Blocks.pdf) · [BRC-21](https://github.com/bsv-blockchain/BRCs/blob/master/scripts/0021.md)
+- The R1 project supplies the basis for the windowed projective arithmetic and the public native signature construction. P2PKH-SM2 uses its own curve constants and signature equation. [P2PKH-R1](../../p2pkh-r1/README.md)
