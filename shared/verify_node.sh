@@ -29,7 +29,8 @@ data="$node_dir/regtest-data"
 mkdir "$data"
 "$node_bin" -regtest -server -rpcport=18443 -minminingtxfee=0.000005 -datadir="$data" -listen=0 -connect=0 -dnsseed=0 -discover=0 \
   -genesisactivationheight=1 -chronicleactivationheight=2 -excessiveblocksize=1000000000 \
-  -maxstackmemoryusageconsensus=100000000 -maxtxsizepolicy=100000000 -maxstdtxvalidationduration=1000 \
+  -maxstackmemoryusageconsensus=100000000 -maxtxsizepolicy=100000000 -maxscriptsizepolicy=100000000 \
+  -maxstdtxvalidationduration=1000 \
   -maxnonstdtxvalidationduration=2000 -printtoconsole >"$node_dir/node.log" 2>&1 &
 node_pid=$!
 export REGTEST_COOKIE="$data/regtest/.cookie"

@@ -23,6 +23,7 @@
 | [P2PKH-SM2](projects/p2pkh-sm2/README.zh-CN.md) | 用 Bitcoin Script 执行 SM2 验签，并计算 SM3 与 ZA | [协议规范](projects/p2pkh-sm2/docs/spec.zh-CN.md) · [Python 参考实现](projects/p2pkh-sm2/reference/README.zh-CN.md) |
 | [Lamport OTS](projects/lamport-ots/README.md) | 基于 SHA-256 的一次性授权。每组密钥对应一个 UTXO，只签一次。 | [安全分析](projects/lamport-ots/docs/security.md) · [验证记录](projects/lamport-ots/docs/validation.md) |
 | [WOTS+](projects/wots-plus/README.md) | 基于 SHA-256 哈希链的一次性授权，签名原始长度为 2,144 字节 | [协议规范](projects/wots-plus/docs/spec.md) · [复现验证](projects/wots-plus/README.md#run-the-checks) |
+| [ML-DSA-44](projects/ml-dsa/README.md) | FIPS 204 纯模式消息验签，以及交易绑定的付款模板 | [实现与测量](projects/ml-dsa/README.md) |
 
 <details>
 <summary><strong>对照脚本尺寸</strong></summary>
@@ -35,6 +36,7 @@
 | [P2PKH-SM2 v1.0.0](projects/p2pkh-sm2/template/layout.json) | 144,925 字节 | 291 字节 |
 | [Lamport OTS](projects/lamport-ots/template/measurement.json) | 22,780 字节 | 8,357 字节 |
 | [WOTS+](projects/wots-plus/docs/validation.md) | 42,266 字节 | 2,310 字节 |
+| [ML-DSA-44](projects/ml-dsa/README.md#script-sizes) | 926,403 字节 | 2,588 字节 |
 
 Lamport 的锁定脚本包含公钥。普通 OTDA 路径的解锁脚本随参与签名的交易数据变化。
 
@@ -44,7 +46,7 @@ Lamport 的锁定脚本包含公钥。普通 OTDA 路径的解锁脚本随参与
 
 ## 交易签名模式
 
-四个支付模板的参考实现均支持下列十二种 BIP143 ForkID 与 Chronicle OTDA 组合。每个输入独立选择模式，普通付款默认使用 `0x41`。
+五个支付模板的参考实现均支持下列十二种 BIP143 ForkID 与 Chronicle OTDA 组合。每个输入独立选择模式，普通付款默认使用 `0x41`。
 
 | 输出覆盖范围 | BIP143 ForkID | ForkID 加 ANYONECANPAY | Chronicle OTDA | OTDA 加 ANYONECANPAY |
 |---|---|---|---|---|

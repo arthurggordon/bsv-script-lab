@@ -8,4 +8,7 @@
 - `verify_node_apple.sh`: isolated BSV Node 1.2.3 through Apple Container. Each project's launcher chooses its RPC port and test module.
 - `test_layout.py`: project-resource links and unchanged R1 template vectors.
 
+- `spend_authorization.py` selects the ForkID or OTDA preimage and encodes the witness for ML-DSA-44.
+- `chain_gang.py` verifies complete inputs at explicit Chronicle heights. The [regression record](chronicle-regression.md) includes the dependency pin and results.
+
 Cryptographic parameters, identity policy, witness format and authorization coverage belong to each project. This directory is not a new consensus engine.
