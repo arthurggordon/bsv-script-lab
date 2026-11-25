@@ -37,6 +37,20 @@ See the [validation record](docs/validation.md) for completed checks, test
 limits and the script-size comparison with Lamport OTS. The 16 reproducible
 payment vectors are in [template/vectors.json](template/vectors.json).
 
+### Cached-constants candidate
+
+`locking_script(key, cached_constants=True)` opts in to a 36,283-byte
+payment lock. Each WOTS+ step uses the same SHA-256 inputs as the existing
+script. The generator keeps the two key-and-mask address fields and the
+zero function prefix on the stack and retrieves them as needed. The raw
+signature is 2,144 bytes, and the ordinary ForkID unlocking script is
+2,310 bytes. Use a fresh one-time key for each UTXO across both formats.
+
+In signed payments with two WOTS+ inputs and two WOTS+ outputs, the
+candidate saves 11,966 bytes under ForkID ALL and 35,898 bytes under
+Chronicle OTDA ALL. The acceptance tests run the 1,230-row matrix and
+mutations across all 67 signature chains for both formats.
+
 ### Lean conformance
 
 Build the [bsv-script-lean evaluator](https://github.com/Calhooon/bsv-script-lean#try-it)

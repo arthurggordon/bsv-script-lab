@@ -26,50 +26,67 @@ def _message_digits():
     return bytes(code) + asm('OP_NIP') + number(maximum) + asm('OP_SWAP OP_SUB')
 
 
-def _chain(index):
+def _chain(index, *, cached_constants):
     # Entry: PRF prefix, checksum, accumulated endpoints, remaining signature.
     code = bytearray(number(N) + asm('OP_SPLIT OP_SWAP OP_4 OP_PICK'))
     code += push(index.to_bytes(4, 'big')) + asm('OP_CAT OP_SWAP OP_FROMALTSTACK')
+    if cached_constants:
+        # Fixed depths include the PRF prefix, checksum, and current chain state.
+        mask_zero = asm('OP_10 OP_PICK')
+        mask_one = asm('OP_9 OP_PICK')
+        function_prefix = asm('OP_9 OP_PICK')
+    else:
+        mask_zero = asm('OP_0 OP_4 OP_NUM2BIN')
+        mask_one = push(b'\0\0\0\1')
+        function_prefix = asm('OP_0') + number(N) + asm('OP_NUM2BIN')
     # Complete the hash chain from the signed digit through step 14. The last
     # eight bytes of ADRS encode the step and keyAndMask in big-endian order.
     for step in range(W - 1):
         code += asm('OP_DUP') + number(step) + asm('OP_GREATERTHAN OP_NOTIF OP_SWAP')
         code += asm('OP_2 OP_PICK') + push(step.to_bytes(4, 'big')) + asm('OP_CAT OP_DUP')
-        code += asm('OP_0 OP_4 OP_NUM2BIN OP_CAT OP_SHA256 OP_SWAP')
-        code += push(b'\0\0\0\1') + asm('OP_CAT OP_SHA256 OP_ROT OP_XOR OP_CAT')
-        code += asm('OP_0') + number(N) + asm('OP_NUM2BIN OP_SWAP OP_CAT OP_SHA256 OP_SWAP OP_ENDIF')
+        code += mask_zero + asm('OP_CAT OP_SHA256 OP_SWAP')
+        code += mask_one + asm('OP_CAT OP_SHA256 OP_ROT OP_XOR OP_CAT')
+        code += function_prefix + asm('OP_SWAP OP_CAT OP_SHA256 OP_SWAP OP_ENDIF')
     # Drop the digit and chain prefix, then append the new endpoint.
     code += asm('OP_DROP OP_NIP OP_ROT OP_SWAP OP_CAT OP_SWAP')
     return bytes(code)
 
 
-def verifier(key):
+def verifier(key, *, cached_constants=False):
     """Consume packed signature and digest, preserving existing altstack items."""
     if not isinstance(key, bytes) or len(key) != KEY_BYTES:
         raise ValueError('WOTS+ public key must be 64 bytes')
     public_seed, commitment = key[:N], key[N:]
     prf_prefix = (3).to_bytes(N, 'big') + public_seed + bytes(20)
-    code = bytearray(push(prf_prefix) + asm('OP_ROT OP_ROT'))
+    if cached_constants:
+        code = bytearray(push(bytes(N)) + push(bytes(4)) + push(b'\0\0\0\1'))
+        code += push(prf_prefix) + asm('OP_5 OP_ROLL OP_5 OP_ROLL')
+    else:
+        code = bytearray(push(prf_prefix) + asm('OP_ROT OP_ROT'))
     code += _message_digits() + asm('OP_SWAP OP_0 OP_SWAP')
     for index in range(2 * N):
-        code += _chain(index)
+        code += _chain(index, cached_constants=cached_constants)
     # Three checksum nibbles, most significant first when popped from altstack.
     code += asm('OP_2 OP_PICK OP_DUP OP_16 OP_MOD OP_TOALTSTACK OP_16 OP_DIV')
     code += asm('OP_DUP OP_16 OP_MOD OP_TOALTSTACK OP_16 OP_DIV OP_TOALTSTACK')
     for index in range(2 * N, CHAINS):
-        code += _chain(index)
+        code += _chain(index, cached_constants=cached_constants)
     code += asm('OP_0 OP_EQUALVERIFY OP_SHA256') + push(commitment)
-    return bytes(code) + asm('OP_EQUALVERIFY OP_2DROP')
+    code += asm('OP_EQUALVERIFY OP_2DROP')
+    if cached_constants:
+        code += asm('OP_2DROP OP_DROP')
+    return bytes(code)
 
 
-def locking_script(key, *, transaction=True):
+def locking_script(key, *, transaction=True, cached_constants=False):
     """Build a payment lock or a detached digest verifier for tests."""
     if not transaction:
         shape = asm('OP_DEPTH OP_2 OP_NUMEQUALVERIFY OP_OVER OP_SIZE')
         shape += number(N) + asm('OP_NUMEQUALVERIFY OP_DROP OP_SIZE')
         shape += number(SIGNATURE_BYTES) + asm('OP_NUMEQUALVERIFY OP_SWAP')
-        return shape + verifier(key) + asm('OP_1')
+        return shape + verifier(key, cached_constants=cached_constants) + asm('OP_1')
     shape = authorization_checks(ORDINARY_CODE, COMPANION_CODE)
     shape += asm('OP_SIZE') + number(SIGNATURE_BYTES) + asm('OP_NUMEQUALVERIFY')
     shape += asm('OP_SWAP OP_HASH256 OP_DUP OP_TOALTSTACK')
-    return shape + verifier(key) + asm('OP_FROMALTSTACK') + check_binding(COMPANION_CODE)
+    return (shape + verifier(key, cached_constants=cached_constants)
+            + asm('OP_FROMALTSTACK') + check_binding(COMPANION_CODE))

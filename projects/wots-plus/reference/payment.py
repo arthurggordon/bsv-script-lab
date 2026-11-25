@@ -70,9 +70,11 @@ def sign_spend(tx, index, funding_raw, public_key, signer, *, sighash=DEFAULT_SI
     tx.serialize()
     previous = funding.outputs[current.vout]
     canonical = locking_script(public_key)
-    if previous.script != canonical:
+    cached = locking_script(public_key, cached_constants=True)
+    if previous.script not in (canonical, cached):
         raise ValueError('funding output does not match public key and canonical template')
-    own_scripts = (canonical, locking_script(public_key, transaction=False))
+    own_scripts = (canonical, cached, locking_script(public_key, transaction=False),
+                   locking_script(public_key, transaction=False, cached_constants=True))
     if any(output.script in own_scripts for output in tx.outputs):
         raise ValueError('change must use a fresh WOTS+ key')
     auth = authorization(tx, index, previous.value, sighash)

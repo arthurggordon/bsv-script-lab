@@ -37,7 +37,10 @@ class WotsTests(unittest.TestCase):
         self.assertEqual(key[:32], public_seed)
         self.assertEqual(key[32:].hex(), "f3888f471037ef42994f1bcbef0d98f6373ea20cb61cf3d1b4360e68179b4fed")
 
-        lock = locking_script(key, transaction=False)
+        locks = [locking_script(key, transaction=False, cached_constants=cache)
+                 for cache in (False, True)]
+        self.assertEqual(len(locking_script(key)), 42266)
+        self.assertEqual(len(locking_script(key, cached_constants=True)), 36283)
         for digest, signature_hash in (
             (bytes(32), "1e100d3eb4888cf851362ed60345bf26439eee93b5ed7368d63afcaf818330d8"),
             (b"\xff" * 32, "07a68e120bae2a47019c4b64928e205e37bcac32e3173378a7858cf833fa54ee"),
@@ -48,7 +51,8 @@ class WotsTests(unittest.TestCase):
                 sig = sign_digest(secret, public_seed, digest)
                 self.assertEqual(sha256(sig).hexdigest(), signature_hash)
                 self.assertTrue(verify_digest(key, digest, sig))
-                self.assertEqual(evaluate(lock, [digest, sig]), ([b"\x01"], []))
+                for lock in locks:
+                    self.assertEqual(evaluate(lock, [digest, sig]), ([b"\x01"], []))
 
     def test_nibble_order_and_checksum(self):
         self.assertEqual(digits(bytes(32)), (0,) * 64 + (3, 12, 0))
@@ -129,6 +133,8 @@ class WotsTests(unittest.TestCase):
             (0, [Output(9_899, b"\x51")]),
             (0, [Output(9_900, locking_script(key))]),
             (0, [Output(9_900, locking_script(key, transaction=False))]),
+            (0, [Output(9_900, locking_script(key, cached_constants=True))]),
+            (0, [Output(9_900, locking_script(key, transaction=False, cached_constants=True))]),
         ):
             with self.assertRaises(ValueError):
                 sign_payment(parent.serialize(), vout, outputs, 100, key, wrong_signature)

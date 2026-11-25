@@ -29,14 +29,15 @@ def fixture_seeds(label=b"forkid-all"):
     return sha256(prefix + b"/secret").digest(), sha256(prefix + b"/public").digest()
 
 
-def funding_transaction(key):
-    return Transaction((Input(b"\x62" * 32, 0),), (Output(10_000, locking_script(key)),))
+def funding_transaction(key, *, cached_constants=False):
+    lock = locking_script(key, cached_constants=cached_constants)
+    return Transaction((Input(b"\x62" * 32, 0),), (Output(10_000, lock),))
 
 
-def mode_fixture(flag, *, paired=True, version=2):
+def mode_fixture(flag, *, paired=True, version=2, cached_constants=False):
     seeds = fixture_seeds(bytes([flag, paired]))
     key = public_key(*seeds)
-    parent = funding_transaction(key)
+    parent = funding_transaction(key, cached_constants=cached_constants)
     other = Transaction((Input(b"\x44" * 32, 0),), (Output(1_000, b"\x51"),))
     outputs = (Output(500, b"\x51"), Output(10_400, b"\x51"))
     if not paired:
@@ -46,10 +47,10 @@ def mode_fixture(flag, *, paired=True, version=2):
     return seeds, (other, parent), signed
 
 
-def mode_cases(*, version=2):
+def mode_cases(*, version=2, cached_constants=False):
     """Yield (name, spend, funding transactions, input index, expected result)."""
     for flag in sorted(SIGHASH_TYPES):
-        _, parents, signed = mode_fixture(flag, version=version)
+        _, parents, signed = mode_fixture(flag, version=version, cached_constants=cached_constants)
         other, parent = parents
         base = flag & 31
         prefix = f"{flag:02x}_"
@@ -73,7 +74,8 @@ def mode_cases(*, version=2):
         moved_pair = replace(signed, inputs=tuple(reversed(signed.inputs)), outputs=tuple(reversed(signed.outputs)))
         yield prefix + "moved_pair", moved_pair, tuple(reversed(parents)), 0, flag == (0x40 | ANYONECANPAY | SIGHASH_SINGLE)
 
-        seeds, parents, signed = mode_fixture(flag, paired=False, version=version)
+        seeds, parents, signed = mode_fixture(flag, paired=False, version=version,
+                                             cached_constants=cached_constants)
         yield prefix + "unpaired", signed, parents, 1, True
         other_output = replace(signed, outputs=(Output(10_899, b"\x51"),))
         yield prefix + "unpaired_other_output", other_output, parents, 1, True
@@ -92,8 +94,8 @@ def mode_cases(*, version=2):
             yield prefix + "companion_wrong_selector", signed.with_script(1, unlock[:-1] + number(0)), parents, 1, False
 
 
-def malformed_cases(*, version=2):
-    seeds, parents, signed = mode_fixture(0x41, version=version)
+def malformed_cases(*, version=2, cached_constants=False):
+    seeds, parents, signed = mode_fixture(0x41, version=version, cached_constants=cached_constants)
     preimage, signature, _ = evaluate(signed.inputs[1].script)[0]
 
     def witness(preimage, signature, selector=0):

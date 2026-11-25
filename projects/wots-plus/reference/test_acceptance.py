@@ -67,6 +67,12 @@ def base_verdicts():
 
 class AcceptanceTests(unittest.TestCase):
     def test_complete_payment_domain(self):
+        self.check_payment_domain(cached_constants=False)
+
+    def test_cached_constants_complete_payment_domain(self):
+        self.check_payment_domain(cached_constants=True)
+
+    def check_payment_domain(self, *, cached_constants):
         expected = base_verdicts()
         self.assertEqual(len(expected), 123)
         self.assertEqual(len(set(VERSIONS)), 2)
@@ -78,7 +84,8 @@ class AcceptanceTests(unittest.TestCase):
         native = bool(os.environ.get("REGTEST_COOKIE"))
 
         for version in VERSIONS:
-            fixtures = chain(mode_cases(version=version), malformed_cases(version=version))
+            fixtures = chain(mode_cases(version=version, cached_constants=cached_constants),
+                             malformed_cases(version=version, cached_constants=cached_constants))
             for label, transaction, parents, index, fixture_verdict in fixtures:
                 self.assertIn(label, expected)
                 flag, active_verdict = expected[label]
@@ -111,10 +118,15 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(visited, required)
         self.assertEqual(len(accepted), 442)
         engines = "chain-gang + BSV Node" if native else "chain-gang"
-        print(f"{engines}: {len(visited)} WOTS+ rows, {len(accepted)} accepted")
+        print(f"{engines}: {len(visited)} WOTS+ rows, {len(accepted)} accepted, cached={cached_constants}")
 
     def test_every_signature_chain_in_a_complete_input(self):
-        _, parents, spending = mode_fixture(0x41)
+        for cached_constants in (False, True):
+            with self.subTest(cached_constants=cached_constants):
+                self.check_signature_chains(cached_constants=cached_constants)
+
+    def check_signature_chains(self, *, cached_constants):
+        _, parents, spending = mode_fixture(0x41, cached_constants=cached_constants)
         preimage, signature, selector = evaluate(spending.inputs[1].script)[0]
         self.assertEqual(len(signature), 67 * 32)
         funding = [engine_transaction(parent) for parent in parents]
