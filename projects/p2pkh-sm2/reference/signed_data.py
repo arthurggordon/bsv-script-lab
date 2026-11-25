@@ -1359,10 +1359,12 @@ def _assess_revocation_status(certificate, snapshots, validation_time, *, issuer
             if (entry.reason != ReasonFlags.unspecified and only_reasons is not None
                     and entry.reason not in only_reasons):
                 continue
-            if entry.reason == ReasonFlags.unspecified or entry.reason in reasons:
-                if entry.revocation_date > validation_time:
-                    continue
-                revocations.append(entry)
+            if entry.revocation_date > validation_time:
+                continue
+            # RFC 5280 §6.3.3(j): a listing on an applicable CRL revokes the
+            # certificate whatever its reason. The reasons mask only governs
+            # coverage for certificates that are absent from the list.
+            revocations.append(entry)
         covered.update(reasons)
     if revocations:
         revocation = min(revocations, key=lambda entry: (entry.revocation_date, entry.reason.value,

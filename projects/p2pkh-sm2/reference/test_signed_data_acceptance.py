@@ -2145,9 +2145,12 @@ class SignedDataReview(SignedDataFixtures):
         target = certificate(points=[point]).public_bytes(serialization.Encoding.DER)
         limited_target = certificate(points=[limited_point]).public_bytes(serialization.Encoding.DER)
         split_target = certificate(points=[limited_point, complementary_point]).public_bytes(serialization.Encoding.DER)
+        other_url = [x509.UniformResourceIdentifier('http://example.invalid/leaf-other.crl')]
+        located_target = certificate(points=[limited_point, x509.DistributionPoint(other_url, None, other_half, None)]
+                                     ).public_bytes(serialization.Encoding.DER)
 
-        def distribution(reasons):
-            return x509.IssuingDistributionPoint(url, None, False, False, reasons, False, False)
+        def distribution(reasons, location=url):
+            return x509.IssuingDistributionPoint(location, None, False, False, reasons, False, False)
 
         first = issue(distribution=distribution(half))
         second = issue(distribution=distribution(other_half))
@@ -2156,6 +2159,10 @@ class SignedDataReview(SignedDataFixtures):
         unspecified = issue(distribution=distribution(half), reason=ReasonFlags.unspecified)
         unrelated_reason = issue(distribution=distribution(other_half), reason=ReasonFlags.affiliation_changed)
         inconsistent_entry = issue(distribution=distribution(half), reason=ReasonFlags.affiliation_changed)
+        # The CRL itself is unpartitioned, so its listing applies even though
+        # the reason lies outside the certificate's distribution-point mask.
+        listed_outside_point = issue(distribution=distribution(None), reason=ReasonFlags.affiliation_changed)
+        clean_other_location = issue(distribution=distribution(None, other_url))
         cases = (
             (target, (), 'undetermined', frozenset(), None),
             (target, (first,), 'undetermined', half, None),
@@ -2167,6 +2174,10 @@ class SignedDataReview(SignedDataFixtures):
             (target, (inconsistent_entry, second), 'undetermined', other_half, None),
             (target, (revoked,), 'revoked', half, hold),
             (target, (unspecified,), 'revoked', half, ReasonFlags.unspecified),
+            (located_target, (clean_other_location,), 'undetermined', other_half, None),
+            (located_target, (listed_outside_point,), 'revoked', half, ReasonFlags.affiliation_changed),
+            (located_target, (listed_outside_point, clean_other_location), 'revoked', all_reasons,
+             ReasonFlags.affiliation_changed),
         )
         for index, (encoded, snapshots, status, reasons, reason) in enumerate(cases):
             with self.subTest(case=index):

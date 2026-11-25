@@ -145,8 +145,8 @@ OpenSSL 判定，用于对照快照结果。[RFC 5280 §5.2.4](https://www.rfc-e
 DER 签名值和配置的用户标识。测试分别修改公钥、颁发者名称、签名用途、证书与密钥
 标识和 SM2 用户标识，并用独立的 RSA 和 SM2 签名作对照。
 
-`assess_certificate_revocation` 在指定时间组合经过认证的快照。有效的吊销条目足以
-判定 `revoked`。只有可用快照覆盖全部八种原因时，缺少吊销条目才判为 `unrevoked`。
+`assess_certificate_revocation` 在指定时间组合经过认证的快照。适用快照中的有效吊销
+条目足以判定 `revoked`，与其原因代码无关；原因掩码只决定覆盖范围。只有可用快照覆盖全部八种原因时，缺少吊销条目才判为 `unrevoked`。
 其他情况返回 `undetermined`。测试覆盖含起点的 `thisUpdate`、不含终点的
 `nextUpdate`、过期或尚未生效的列表、在较早的暂缓记录之后解除吊销、相互冲突的版本、直接与间接
 颁发者、分发点名称、CA 与终端实体范围及原因掩码。补充的 OpenSSL 对照覆盖匹配与
