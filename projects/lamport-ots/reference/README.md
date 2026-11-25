@@ -43,5 +43,5 @@ Keep private keys and durable one-use state in the signer.
 
 Apple Container uses host RPC port 18449 by default; set `LAMPORT_RPC_PORT` if
 occupied. Its node has no peers and is removed after testing. Linux CI uses port
-18443 and verifies the release archive against the release checksum manifest;
-this is transport/checksum validation, not a pinned release-signing-key check.
+18443 and verifies the release archive against a repository-pinned SHA-256 digest
+before extraction.

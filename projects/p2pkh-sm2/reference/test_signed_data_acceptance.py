@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from asn1crypto.core import Integer, ObjectIdentifier, OctetString, SetOf
 from asn1crypto.x509 import Certificate as ASN1Certificate
@@ -16,13 +17,14 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509 import Name, NameAttribute, ReasonFlags, load_der_x509_certificate, load_der_x509_crl
 from cryptography.x509.oid import NameOID
+import certificate_path
 from ecdsa.der import read_length, remove_integer, remove_sequence
 from ecdsa.util import sigdecode_der
 from signed_data import AmbiguousCertificateIssuer, MissingAttributeSchema, MissingExtensionSchema
 from signed_data import assess_certificate_revocation, load_crl_snapshot, merge_crl_revocations
 from signed_data import signed_data_signer, validate_crl_pair, validate_crl_series
 from signed_data import validate_signed_data_format, verify_crl_signature, verify_signed_data
-from sm2 import N
+from sm2 import N, message_digest, verify_digest
 from test_signed_data import (
     DATA_OID, ISSUER_AND_SERIAL, OTHER_ISSUER_AND_SERIAL, SIGNED_DATA_OID,
     SKI, SM2, SM2_WITH_SM3, SM3, signed_data,
@@ -748,6 +750,28 @@ class SignedDataAcceptance(SignedDataFixtures):
             verify_signed_data(signed_data(direct, attached=message), self.trusted_signers,
                                detached_content=OTHER_MESSAGE)
         COMPLETED_WITNESSES.add('verify_all_signers')
+
+    def test_repeated_signature_is_verified_once_per_authenticated_payload(self):
+        message = b'Repeated SignerInfo entries committing to one payload.'
+        signature = self.external_signature(message)
+        fields = b'\x02\x01\x02' + ISSUER_AND_SERIAL + SM3 + SM2 + der(0x04, signature)
+        first = der(0x30, fields)
+        annotation = der(0x30, der(0x06, bytes.fromhex('2a0304')) + der(0x31, der(0x04, b'note')))
+        annotated = der(0x30, fields + der(0xa1, annotation))
+        entries = b''.join(sorted((first, first, annotated)))
+        container = signed_data(signature, attached=message, include_signer=False, extra_signers=entries)
+        with patch('signed_data.message_digest', wraps=message_digest) as digest, \
+                patch('signed_data.verify_digest', wraps=verify_digest) as verify:
+            self.assertEqual(verify_signed_data(container, self.trusted_signers), message)
+        digest.assert_called_once_with(self.key, message, USER_ID)
+        self.assertEqual(verify.call_count, 1)
+
+        invalid = der(0x30, b'\x02\x01\x02' + ISSUER_AND_SERIAL + SM3 + SM2
+                      + der(0x04, self.external_signature(b'A different payload.')))
+        container = signed_data(signature, attached=message, include_signer=False,
+                                extra_signers=b''.join(sorted((first, invalid))))
+        with self.assertRaisesRegex(ValueError, 'invalid SignedData signature'):
+            verify_signed_data(container, self.trusted_signers)
 
     def test_verify_signed_attributes_and_content_digest(self):
         digest = self.openssl('dgst', '-sm3', '-binary', data=MESSAGE)
@@ -2102,7 +2126,7 @@ class SignedDataReview(SignedDataFixtures):
             ((), issue(), False, 'unrevoked'),
             ((direct,), issue(distribution=distribution(location)), False, 'unrevoked'),
             ((missing,), issue(distribution=distribution(location)), False, 'undetermined'),
-            ((direct,), issue(distribution=distribution([x509.DirectoryName(authority)])), False, 'unrevoked'),
+            ((direct,), issue(distribution=distribution([x509.DirectoryName(authority)])), False, 'undetermined'),
             ((relative,), issue(distribution=distribution(expanded)), False, 'unrevoked'),
             ((x509.DistributionPoint(expanded, None, None, None),),
              issue(distribution=distribution(None, relative_name=rdn)), False, 'unrevoked'),
@@ -2121,6 +2145,32 @@ class SignedDataReview(SignedDataFixtures):
                 target = certificate(points=points, is_ca=is_ca).public_bytes(serialization.Encoding.DER)
                 self.assertEqual(assess_certificate_revocation(target, [snapshot], validation_time=check_time).status, expected)
         COMPLETED_WITNESSES.add('crl_assessment_scope')
+
+    def test_issuer_default_cannot_supply_coverage_for_an_explicit_distribution_point(self):
+        certificate, _, issue, authority, delegated, _, when, _ = self.crl_assessment_fixture()
+        encoding = serialization.Encoding.DER
+        location = [x509.UniformResourceIdentifier('http://example.invalid/declared.crl')]
+        direct = x509.DistributionPoint(location, None, None, None)
+        indirect = x509.DistributionPoint(location, None, None, [x509.DirectoryName(delegated)])
+        issuer_scope = x509.IssuingDistributionPoint(
+            [x509.DirectoryName(authority)], None, False, False, None, False, False,
+        )
+        named_list, complete_list = issue(distribution=issuer_scope), issue()
+        anchor = certificate(ca_cert=True).public_bytes(encoding)
+        for points, snapshot, wanted in (
+            ((), named_list, 'unrevoked'),
+            ([direct], named_list, 'undetermined'),
+            ([direct], complete_list, 'unrevoked'),
+            ([indirect], complete_list, 'undetermined'),
+        ):
+            for trusted in (None, anchor):
+                with self.subTest(points=points, trusted_path=trusted is not None, wanted=wanted):
+                    target = certificate(points=points).public_bytes(encoding)
+                    verdict = assess_certificate_revocation(target, [snapshot], validation_time=when,
+                                                             trust_anchor=trusted)
+                    self.assertEqual(verdict.status, wanted)
+                    if wanted == 'undetermined':
+                        self.assertEqual(verdict.covered_reasons, frozenset())
 
     def test_legacy_certificate_requires_an_unrestricted_crl_scope(self):
         certificate, _, issue, _, _, _, check_time, _ = self.crl_assessment_fixture()
@@ -2214,13 +2264,15 @@ class SignedDataReview(SignedDataFixtures):
                     self.assertIn(error, checked.stderr)
         COMPLETED_WITNESSES.add('crl_assessment_openssl')
 
-    def revocation_path_fixture(self):
+    def revocation_path_fixture(self, *, ca_subject=None):
         now = datetime(2025, 1, 2, tzinfo=timezone.utc)
         keys = [rsa.generate_private_key(public_exponent=65537, key_size=2048) for _ in range(4)]
         root_key, ca_key, crl_key, other_key = keys
         root_name, ca_name, crl_name, leaf_name = (
             Name([NameAttribute(NameOID.COMMON_NAME, label)])
             for label in ('Path root', 'Path intermediate', 'Delegated CRL signer', 'Path leaf'))
+        if ca_subject is not None:
+            ca_name = ca_subject
         uri = [x509.UniformResourceIdentifier('http://example.invalid/delegated.crl')]
         point = x509.DistributionPoint(uri, None, None, [x509.DirectoryName(crl_name)])
 
@@ -2429,6 +2481,31 @@ class SignedDataReview(SignedDataFixtures):
                 with self.assertRaisesRegex(ValueError, error):
                     assess(snapshots, **overrides)
         COMPLETED_WITNESSES.add('revocation_path_status')
+
+    def test_path_identification_uses_no_extra_processes_for_unused_intermediates(self):
+        ca_name = Name([x509.RelativeDistinguishedName([
+            NameAttribute(NameOID.COMMON_NAME, 'Test +, intermediate é'),
+            NameAttribute(NameOID.ORGANIZATION_NAME, 'Test organization'),
+        ])])
+        root, intermediate, target, delegated, now, _, _, upstream = self.revocation_path_fixture(ca_subject=ca_name)
+        options = {'validation_time': now, 'trust_anchor': root(), 'require_chain_revocation': True}
+        parent = intermediate()
+        leaf = target()
+        evidence = [delegated(), upstream(from_root=False), upstream(from_root=True)]
+        extras = [intermediate(subject=Name([NameAttribute(NameOID.COMMON_NAME, f'Unused CA {i}')]), serial=100+i)
+                  for i in range(16)]
+        for certificates in ([parent], [*extras, parent, parent]):
+            with self.subTest(intermediates=len(certificates)):
+                with patch.object(certificate_path, '_openssl', wraps=certificate_path._openssl) as run:
+                    verdict = assess_certificate_revocation(leaf, evidence, intermediates=certificates, **options)
+                self.assertEqual(verdict.status, 'unrevoked')
+                self.assertEqual([call.args[0][1] for call in run.call_args_list], ['verify'] * 4)
+        with patch.object(certificate_path, 'monotonic', side_effect=(100, 116)), \
+                patch.object(certificate_path.subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'path validation timed out'):
+                certificate_path.verify_revocation_paths(leaf, (), intermediates=(), validation_time=now,
+                                                         trust_anchor=options['trust_anchor'], identify=True)
+        run.assert_not_called()
 
     def test_openssl_issued_sm2_certificate_and_crl_share_trust_anchor(self):
         marker = datetime.now(timezone.utc)

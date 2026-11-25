@@ -27,7 +27,7 @@ python3 -m unittest -v test_sighash
 bash verify.sh
 ```
 
-The node launcher checks the downloaded archive against the release checksum
+The node launcher checks the downloaded archive against a repository-pinned SHA-256 digest
 and uses a temporary regtest directory with no peers. It does not broadcast
 transactions. Tests cover consecutive transfers, modified inputs and outputs,
 invalid keys and scalars, incorrect user IDs, forged preimages, and extra
@@ -65,7 +65,7 @@ by the correct SM2 test key, and spends across the Chronicle activation
 boundary. The activation cases use transaction version 1 on both sides to
 isolate the effect of the activation flags.
 
-[Standard vector](../template/sm2-standard.json) · [BSV Node source](https://github.com/bitcoin-sv/bitcoin-sv/tree/6504a3aff65ba97c0f6c80962b033e35ecbfed4b) · [chain-gang source](https://github.com/linzhm/chain-gang/tree/5cb8c6e410dbfad1c619cec3ca54d1bcaacd4eb7)
+[Standard vector](../template/sm2-standard.json) · [BSV Node source](https://github.com/bitcoin-sv/bitcoin-sv/tree/6504a3aff65ba97c0f6c80962b033e35ecbfed4b) · [chain-gang source](https://github.com/linzhm/chain-gang/tree/8b60b71a12a69fdcb465d3e627dbf6f43d6ed081)
 
 ## SignedData payment interop
 

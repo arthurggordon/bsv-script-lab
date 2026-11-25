@@ -17,7 +17,7 @@ from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
 from cryptography.x509.oid import CRLEntryExtensionOID, ExtensionOID
 
 from certificate_path import verify_revocation_paths
-from sm2 import N, USER_ID, be32, parse_public, sm3, verify
+from sm2 import N, USER_ID, be32, message_digest, parse_public, sm3, verify, verify_digest
 
 
 _DATA = bytes.fromhex('2a811ccf550601040201')
@@ -1205,20 +1205,18 @@ def _assess_revocation_status(certificate, snapshots, validation_time):
     target = load_der_x509_certificate(certificate)
     basic = _extension_value(target.extensions, ExtensionOID.BASIC_CONSTRAINTS)
     is_ca = basic is not None and basic.ca
-    distribution_points = _extension_value(target.extensions, ExtensionOID.CRL_DISTRIBUTION_POINTS) or ()
-    alternatives = _extension_value(target.extensions, ExtensionOID.ISSUER_ALTERNATIVE_NAME) or ()
-    default_point = DistributionPoint([DirectoryName(target.issuer), *alternatives], None, None, None)
+    distribution_points = _extension_value(target.extensions, ExtensionOID.CRL_DISTRIBUTION_POINTS)
+    if distribution_points is None:
+        alternatives = _extension_value(target.extensions, ExtensionOID.ISSUER_ALTERNATIVE_NAME) or ()
+        distribution_points = (
+            DistributionPoint([DirectoryName(target.issuer), *alternatives], None, None, None),
+        )
     covered = set()
     revocations = []
     for snapshot in _latest_crl_scopes(snapshots, validation_time):
-        matched = [_crl_distribution_coverage(snapshot, point, target, is_ca=is_ca)
-                   for point in distribution_points]
-        applicable = [reasons for reasons in matched if reasons is not None]
-        if not applicable:
-            default_coverage = _crl_distribution_coverage(snapshot, default_point, target, is_ca=is_ca)
-            if default_coverage is not None:
-                applicable.append(default_coverage)
-        reasons = frozenset().union(*applicable)
+        matched = (_crl_distribution_coverage(snapshot, point, target, is_ca=is_ca)
+                   for point in distribution_points)
+        reasons = frozenset().union(*(coverage for coverage in matched if coverage is not None))
         if not reasons:
             continue
         entry = snapshot.revocation_for(target.issuer, target.serial_number)
@@ -1363,7 +1361,11 @@ def _general_fields(envelope, *, require_signer=False, x509_profile=False, exten
 
 
 def _decode_signers(signers, attribute_schemas, *, content_digest=None):
+    previous = None
     for encoded in _set_members(signers, 0x30):
+        if encoded == previous:
+            continue
+        previous = encoded
         signer = _DER(_DER(encoded).take(0x30))
         identifier = _signer_identifier(signer)
         _check_issuer_and_serial_number(identifier)
@@ -1417,16 +1419,32 @@ def verify_signed_data(envelope, trusted_signers, *, detached_content=None, attr
         raise ValueError('supplied content differs from encapsulated SignedData content')
 
     content_digest = sm3(content)
+    direct_digests = {}
+    verified = set()
     for identifier, attributes, signature in _decode_signers(signers, attribute_schemas,
                                                             content_digest=content_digest):
         if identifier not in trusted_signers:
             raise ValueError('untrusted SignedData signer identifier')
         key, user_id = trusted_signers[identifier]
-        payload = content
-        if attributes is not None:
-            payload = b'\x31' + attributes[1:] if signed_attrs_encoding == 'cms-set' else attributes
-        if not verify(key, payload, signature, user_id):
+        if not isinstance(key, bytes) or not isinstance(user_id, bytes):
             raise ValueError('invalid SignedData signature')
+        try:
+            if attributes is None:
+                identity = key, user_id
+                if identity not in direct_digests:
+                    direct_digests[identity] = message_digest(key, content, user_id)
+                digest = direct_digests[identity]
+            else:
+                payload = b'\x31' + attributes[1:] if signed_attrs_encoding == 'cms-set' else attributes
+                digest = message_digest(key, payload, user_id)
+        except ValueError as error:
+            raise ValueError('invalid SignedData signature') from error
+        check = key, digest, signature
+        if check in verified:
+            continue
+        if not verify_digest(key, digest, signature):
+            raise ValueError('invalid SignedData signature')
+        verified.add(check)
     return content
 
 

@@ -57,7 +57,10 @@ def za(key, user_id=USER_ID):
     return sm3((8*len(user_id)).to_bytes(2,'big')+user_id+be32(A)+be32(B)+be32(G[0])+be32(G[1])+key[1:])
 
 
-def message_digest(key, message, user_id=USER_ID): return sm3(za(key,user_id)+message)
+def message_digest(key, message, user_id=USER_ID):
+    digest = new('sm3', za(key, user_id))
+    digest.update(message)
+    return digest.digest()
 
 
 def verify_digest(key, digest, signature):
