@@ -328,7 +328,8 @@ assessment under a caller-selected trust anchor.
 `assess_certificate_revocation` combines caller-selected authenticated
 snapshots from complete CRLs or merged CRLs. The result is `revoked`,
 `unrevoked` or `undetermined`, together with reason coverage. A valid
-revocation entry determines `revoked`. An absent entry yields
+revocation entry on an applicable snapshot determines `revoked`, whatever
+its reason code. Reason masks govern coverage only. An absent entry yields
 `unrevoked` only when the usable snapshots cover all eight reasons.
 
 | Normative area | Executable evidence |
