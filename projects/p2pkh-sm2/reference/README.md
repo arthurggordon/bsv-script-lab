@@ -40,6 +40,14 @@ Select `--version 3` in the generator, or pass `version=3` to the Python locking
 
 [v3 manifest](../template/layout-v3.json) · [v3 payment vector](../template/spend-all-v3.json) · [v3 mode vectors](../template/sighash-modes-v3.json)
 
+### Internal v4 candidate baseline
+
+v4 emits 144,925 bytes. It caches seven powers of two for SM3 rotations and reductions, uses shorter stack instructions for nearby operands, and simplifies the Boolean functions in the last 48 rounds. It uses the existing curve arithmetic and transaction binding. The v1–v3 manifests pin their existing scripts.
+
+Select `--version 4` in the generator or `version=4` in the Python locking script constructors. The v4 vectors pin the complete ForkID payment and the 16 sighash preimages. Regression runs cover ForkID and Chronicle OTDA, activation boundaries, negative spends, and attached and detached SignedData payments from the independent Go signer.
+
+[v4 manifest](../template/layout-v4.json) · [v4 payment vector](../template/spend-all-v4.json) · [v4 mode vectors](../template/sighash-modes-v4.json)
+
 ## SignedData payment interop
 
 [GB/T 35275-2026](https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=28A18B702BDC318803E598F5E502E2CC)

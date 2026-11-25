@@ -45,23 +45,56 @@ def perm(x,a,b): return xor(xor(x,rot(x,a)),rot(x,b))
 
 
 REVERSE4=asm(' '.join(['OP_1 OP_SPLIT OP_SWAP OP_TOALTSTACK']*3+['OP_FROMALTSTACK OP_CAT']*3))
+# The larger powers used by rotations and reduction modulo 2**32 cost more
+# to push as literals than to copy from a cached stack slot.
+ROTATION_CONSTANTS = tuple(1 << exponent for exponent in (15, 17, 19, 20, 23, 25, 32))
+SHALLOW_DROPS = ('OP_DROP', 'OP_NIP', 'OP_ROT OP_DROP')
 
 
 class Builder:
-    def __init__(self, optimized):
+    def __init__(self, optimized, compact):
         self.code=bytearray()
         self.stack=['data']
         self.optimized=optimized
+        self.compact = compact
+        self.constants = {value: f'constant_{value}' for value in ROTATION_CONSTANTS} if compact else {}
+
+    def cache_constants(self):
+        for value, name in self.constants.items():
+            self.code.extend(number(value))
+            self.stack.append(name)
 
     def raw(self,s): self.code.extend(asm(s))
     def expr(self,e,*,binary=False):
         # A five-byte word keeps the Script sign bit clear and gives all
         # SM3 bitwise operands the same width. Only arithmetic needs decoding.
-        if isinstance(e,int): self.code.extend(number(e))
-        elif isinstance(e,str): self.code.extend(number(len(self.stack)-1-self.stack.index(e))+asm('OP_PICK'))
+        if isinstance(e, int):
+            if e in self.constants:
+                self.expr(self.constants[e], binary=binary)
+                return
+            self.code.extend(number(e))
+        elif isinstance(e, str):
+            depth = len(self.stack) - 1 - self.stack.index(e)
+            if self.compact and depth < 2:
+                self.raw(('OP_DUP', 'OP_OVER')[depth])
+            else:
+                self.code.extend(number(depth) + asm('OP_PICK'))
         elif e[0]=='ROT':
-            self.expr(e[1]); n=e[2]
-            self.code.extend(asm('OP_DUP')+number(1<<n)+asm('OP_MUL')+number(1<<32)+asm('OP_MOD OP_SWAP')+number(1<<(32-n))+asm('OP_DIV OP_ADD'))
+            _, word, count = e
+            self.expr(word)
+            self.raw('OP_DUP')
+            self.stack.append(None)
+            # Track the temporary operands so cached constants can be picked
+            # at the correct depth throughout the numeric rotation.
+            self.expr(1 << count)
+            self.raw('OP_MUL')
+            self.stack.pop()
+            self.expr(1 << 32)
+            self.raw('OP_MOD OP_SWAP')
+            self.stack.pop()
+            self.expr(1 << (32 - count))
+            self.raw('OP_DIV OP_ADD')
+            del self.stack[-2:]
             if binary: self.raw('5 OP_NUM2BIN')
             return
         else:
@@ -84,7 +117,10 @@ class Builder:
         self.stack[-1]=name
     def drop(self,name):
         index=self.stack.index(name); depth=len(self.stack)-1-index
-        self.code.extend(number(depth)+asm('OP_ROLL OP_DROP'))
+        if self.compact and depth < len(SHALLOW_DROPS):
+            self.raw(SHALLOW_DROPS[depth])
+        else:
+            self.code.extend(number(depth)+asm('OP_ROLL OP_DROP'))
         self.stack.pop(index)
     def word(self,name,offset):
         self.expr('data')
@@ -93,18 +129,21 @@ class Builder:
 
 
 @cache
-def hash_script(length, state=IV, processed=0, *, optimized=False):
+def hash_script(length, state=IV, processed=0, *, optimized=False, compact=False):
     """Top item is exactly length bytes. Replace it with SM3, preserving lower stack.
 
     state is a known fixed-prefix midstate; processed must be whole blocks.
-    The default emits the original bytecode used by templates v1 and v2.
+    The default emits the v1/v2 bytecode. optimized selects v3. compact
+    additionally enables the v4 constant, stack, and Boolean optimizations.
     """
     if processed%64: raise ValueError('midstate must start on a block boundary')
-    b=Builder(optimized)
+    optimized = optimized or compact
+    b=Builder(optimized, compact)
     b.code.extend(asm('OP_SIZE')+number(length)+asm('OP_NUMEQUALVERIFY'))
     total=processed+length
     padding=b'\x80'+bytes((55-total)%64)+(total*8).to_bytes(8,'big')
     b.code.extend(push(padding)+asm('OP_CAT'))
+    b.cache_constants()
     for i,v in enumerate(state): b.assign('h'+str(i),v)
     for offset in range(0,length+len(padding),64):
         static_padding=optimized and offset>=length
@@ -132,8 +171,15 @@ def hash_script(length, state=IV, processed=0, *, optimized=False):
             b.assign('ss1',rot(plus(a_rot12,'e',rol(0x79cc4519 if j<16 else 0x7a879d8a,j)),7))
             b.assign('ss2',xor('ss1',a_rot12))
             if optimized: b.drop('a_rot12')
-            ff=xor(xor('a','b'),'c') if j<16 else bor(bor(band('a','b'),band('a','c')),band('b','c'))
-            gg=xor(xor('e','f'),'g') if j<16 else bor(band('e','f'),band(xor('e',MASK),'g'))
+            if j < 16:
+                ff = xor(xor('a', 'b'), 'c')
+                gg = xor(xor('e', 'f'), 'g')
+            elif compact:
+                ff = bor(band('a', 'b'), band('c', bor('a', 'b')))
+                gg = xor('g', band('e', xor('f', 'g')))
+            else:
+                ff = bor(bor(band('a', 'b'), band('a', 'c')), band('b', 'c'))
+                gg = bor(band('e', 'f'), band(xor('e', MASK), 'g'))
             cross_word=words[j]^words[j+4] if static_padding else xor(words[j],words[j+4])
             b.assign('tt1',plus(ff,'d','ss2',cross_word))
             b.assign('tt2',plus(gg,'h','ss1',words[j]))
@@ -141,6 +187,8 @@ def hash_script(length, state=IV, processed=0, *, optimized=False):
         for i,c in enumerate('abcdefgh'): b.assign('h'+str(i),xor('h'+str(i),c))
         for name in [*(() if static_padding else words),*'abcdefgh','ss1','ss2','tt1','tt2']: b.drop(name)
     b.drop('data')
+    for name in b.constants.values():
+        b.drop(name)
     for i in range(8):
         b.expr('h'+str(i))
         b.code.extend(asm('5 OP_NUM2BIN 4 OP_SPLIT OP_DROP')+REVERSE4)

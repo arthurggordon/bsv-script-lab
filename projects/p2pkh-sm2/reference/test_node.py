@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import unittest
 import requests
+from assemble import TEMPLATE_VERSIONS
 from test_sm2 import fixture
 from test_sighash import chain_check, mode_cases, activation_cases
 from p2pkh_sm2 import *
@@ -37,19 +38,19 @@ def check(tx, parents, index, valid=True):
 
 class NodeTests(unittest.TestCase):
     def test_sighash_coverage(self):
-        for version in (2,3):
+        for version in TEMPLATE_VERSIONS[1:]:
             with self.subTest(template_version=version):
                 mode_cases(check_node,template_version=version)
 
     def test_chronicle_flags(self):
-        for version in (2,3):
+        for version in TEMPLATE_VERSIONS[1:]:
             with self.subTest(template_version=version):
                 activation_cases(check_node,template_version=version)
 
     def test_consecutive_payments(self):
         qa=encode_public(mul(1)); qb=encode_public(mul(7))
         start=locking_script_from_public_key(qa)
-        for versions in ((2,2,2),(3,3,2)):
+        for versions in ((2,2,2),(3,3,2),(4,4,3)):
             with self.subTest(destination_versions=versions):
                 parent=Transaction((Input(b'\x22'*32,0),),(Output(10000,start),))
                 for hop,(d,q,destination,version) in enumerate(zip((1,7,1),(qa,qb,qa),(qb,qa,qb),versions)):
@@ -70,7 +71,7 @@ class NodeTests(unittest.TestCase):
         check(replace(signed,inputs=(replace(signed.inputs[0],txid=b'\x77'*32),signed.inputs[1])),[other,parent],1,False)
 
     def test_rejects_mutations(self):
-        for version in (2,3):
+        for version in TEMPLATE_VERSIONS[1:]:
             with self.subTest(template_version=version):
                 self.check_rejects_mutations(version)
 

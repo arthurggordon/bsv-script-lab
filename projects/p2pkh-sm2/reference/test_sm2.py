@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-from assemble import assemble
+from assemble import TEMPLATE_VERSIONS, assemble
 from p2pkh_sm2 import *
 from sm2 import *
 from sm3_script import hash_script,compress,IV
@@ -18,6 +18,7 @@ from shared.script import push,number,assemble as assemble_blocks
 from shared.transaction import *
 
 ROOT=Path(__file__).resolve().parents[1]
+SM3_PROFILES = ({}, {'optimized': True}, {'compact': True})
 
 
 def der(tag,raw):
@@ -92,9 +93,9 @@ class SM2Tests(unittest.TestCase):
         rng=random.Random(4818)
         for n in (0,3,55,56,63,64,65,82,119,120,127,128,210):
             message=rng.randbytes(n)
-            for optimized in (False,True):
-                with self.subTest(length=n,optimized=optimized):
-                    stack,alt=evaluate(hash_script(n,optimized=optimized),[b'lower',message])
+            for profile in SM3_PROFILES:
+                with self.subTest(length=n,profile=profile):
+                    stack,alt=evaluate(hash_script(n,**profile),[b'lower',message])
                     self.assertEqual(stack,[b'lower',sm3(message)]); self.assertEqual(alt,[])
         self.assertEqual(sm3(b'abc').hex(),'66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0')
 
@@ -102,10 +103,20 @@ class SM2Tests(unittest.TestCase):
         for d in (1,2,19,N-2):
             key=encode_public(mul(d)); prefix=b'\0\x80'+USER_ID+be32(A)+be32(B)+be32(G[0])+be32(G[1])
             state=compress(compress(IV,prefix[:64]),prefix[64:128])
-            for optimized in (False,True):
-                with self.subTest(key=d,optimized=optimized):
-                    stack,alt=evaluate(hash_script(82,state,128,optimized=optimized),[prefix[128:]+key[1:]])
+            for profile in SM3_PROFILES:
+                with self.subTest(key=d,profile=profile):
+                    stack,alt=evaluate(hash_script(82,state,128,**profile),[prefix[128:]+key[1:]])
                     self.assertEqual(stack,[za(key)]); self.assertEqual(alt,[])
+
+    def test_compact_sm3_preserves_lower_stack_and_checks_input_length(self):
+        script=hash_script(64,compact=True)
+        lower=[(1 << 32).to_bytes(5,'little'), b'\x80', b'lower']
+        for data in (bytes(64), b'\xff'*64, b'\x80\x01'*32):
+            with self.subTest(word=data[:2].hex()):
+                self.assertEqual(evaluate(script,lower+[data]),(lower+[sm3(data)],[]))
+        for length in (63,65):
+            with self.subTest(length=length), self.assertRaisesRegex(ScriptError,'NUMEQUALVERIFY'):
+                evaluate(script,lower+[bytes(length)])
 
     def test_openssl_standard_and_round_trip(self):
         self.assertIsNotNone(shutil.which('openssl'),'OpenSSL with SM2 is required')
@@ -129,7 +140,8 @@ class SM2Tests(unittest.TestCase):
             self.assertTrue(valid_script(lock,items,signed))
 
     def test_canonical_recognition(self):
-        for version, filename in ((1,'layout-v1.json'),(2,'layout.json'),(3,'layout-v3.json')):
+        for version in TEMPLATE_VERSIONS:
+            filename='layout.json' if version==2 else f'layout-v{version}.json'
             with self.subTest(template_version=version):
                 key,lock,*_=fixture(template_version=version)
                 manifest=json.loads((ROOT/'template'/filename).read_text())
@@ -145,7 +157,7 @@ class SM2Tests(unittest.TestCase):
         with self.assertRaises(ValueError): public_key_hash160(r1)
 
     def test_full_script_random_keys(self):
-        for version in (2,3):
+        for version in TEMPLATE_VERSIONS[1:]:
             for d,k in ((1,2),(7,19),(19,7),(N-2,N-1),(12345,67890)):
                 key,lock,parent,tx,pre,sig=fixture(d,k,template_version=version)
                 with self.subTest(d=d,template_version=version): self.assertTrue(valid_script(lock,[pre,key,sig],tx))
@@ -213,9 +225,14 @@ class SM2Tests(unittest.TestCase):
         with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(parent.outputs[0].value-100,b'\x51')],100,key,lambda *_: bytes(64))
         with self.assertRaises(ValueError): Transaction.parse(parent.serialize()+b'\0')
 
-    def test_v3_payment_vector(self):
-        vector=json.loads((ROOT/'template/spend-all-v3.json').read_text())
-        key,lock,parent,tx,pre,sig=fixture(template_version=3)
+    def test_optimized_payment_vectors(self):
+        for version in TEMPLATE_VERSIONS[2:]:
+            with self.subTest(template_version=version):
+                self.check_payment_vector(version)
+
+    def check_payment_vector(self, version):
+        vector=json.loads((ROOT/'template'/f'spend-all-v{version}.json').read_text())
+        key,lock,parent,tx,pre,sig=fixture(template_version=version)
         self.assertEqual(key.hex(),vector['public_key'])
         self.assertEqual(parent.txid(),vector['parent_txid'])
         self.assertEqual(tx.serialize().hex(),vector['unsigned_tx_hex'])
@@ -224,7 +241,7 @@ class SM2Tests(unittest.TestCase):
         self.assertEqual(za(key).hex(),vector['za_hex'])
         self.assertEqual(message_digest(key,hash256(pre)).hex(),vector['sm2_digest_hex'])
         self.assertEqual(sig.hex(),vector['signature_hex'])
-        witness=current_input_unlock(tx,0,1000,key,sig,version=3)
+        witness=current_input_unlock(tx,0,1000,key,sig,version=version)
         self.assertEqual(len(witness),291)
         self.assertEqual(witness.hex(),vector['script_sig_hex'])
         signed=sign_payment(parent.serialize(),0,tx.outputs,100,key,lambda *_: sig)

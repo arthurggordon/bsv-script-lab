@@ -5,6 +5,7 @@ from pathlib import Path
 import unittest
 
 from tx_engine import Script, Tx, sig_hash_preimage
+from assemble import TEMPLATE_VERSIONS
 from p2pkh_sm2 import (authorization, current_input_unlock, identify, locking_script_from_public_key,
                        sign_input, sign_payment)
 from sighash import ANYONECANPAY, CHRONICLE, COMPANION_CODE, SINGLE, SUPPORTED_TYPES
@@ -121,12 +122,13 @@ def activation_cases(check, *, template_version=2):
 
 class ModeTests(unittest.TestCase):
     def test_complete_modes(self):
-        for version in (2, 3):
+        for version in TEMPLATE_VERSIONS[1:]:
             with self.subTest(template_version=version):
                 mode_cases(chain_check, template_version=version)
 
     def test_signing_vectors_against_engine(self):
-        for version, filename in ((2, 'sighash-modes.json'), (3, 'sighash-modes-v3.json')):
+        for version in TEMPLATE_VERSIONS[1:]:
+            filename = 'sighash-modes.json' if version == 2 else f'sighash-modes-v{version}.json'
             with self.subTest(template_version=version):
                 self.check_signing_vectors(version, filename)
 

@@ -41,3 +41,9 @@ python3 projects/p2pkh-sm2/reference/generate_lock.py --version 3 --owner-hash16
 ```
 
 [v3 指纹](template/layout-v3.json) · [v3 付款向量](template/spend-all-v3.json) · [v3 交易覆盖向量](template/sighash-modes-v3.json)
+
+## 内部候选基线 v4
+
+v4 在 v3 的 SM3 生成器上复用移位和取模常量，缩短浅层栈操作，并简化后 48 轮的 `FF` 和 `GG`。锁定脚本为 **144,925 字节**，比 v3 少 **16,963 字节（10.5%）**。曲线验签、交易绑定和常规 ForkID 的 291 字节解锁格式沿用 v3。生成器通过 `--version 4` 选择 v4，Python 构造 API 使用 `version=4`。v1 至 v4 均为内部模板版本。
+
+[v4 指纹](template/layout-v4.json) · [v4 付款向量](template/spend-all-v4.json) · [v4 交易覆盖向量](template/sighash-modes-v4.json)

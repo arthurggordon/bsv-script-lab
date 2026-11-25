@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 
+from assemble import TEMPLATE_VERSIONS
 from p2pkh_sm2 import locking_script_from_public_key, sign_input
 from signed_data import signed_data_signer, verify_signed_data
 from sm2 import USER_ID, encode_public, fixture_sign, mul, sm3
@@ -99,7 +100,7 @@ class SignedDataTests(unittest.TestCase):
         signer_identifier = bytes.fromhex(identity['signer_identifier_hex'])
         self.assertEqual(identity['signer_version'], 2)
 
-        for version, (flag, detached) in product((2, 3), ((0x41, False), (0x61, True))):
+        for version, (flag, detached) in product(TEMPLATE_VERSIONS[1:], ((0x41, False), (0x61, True))):
             with self.subTest(template_version=version, flag=hex(flag), detached=detached):
                 parent = Transaction((Input(b'\xa7' * 32, 0),),
                                      (Output(1000, locking_script_from_public_key(key, version=version)),))
