@@ -2,7 +2,7 @@
 
 The wallet creates outputs from [the canonical template](../template/template.hex) by default. The assembler rebuilds those bytes independently from the literal blocks in [lock.asm](./asm/lock.asm). Conformance compares three owner vectors, validates three consecutive ordinary payments, and exercises the twelve paired sighash modes and four unpaired SINGLE modes. Both BSV Node and chain-gang must accept each valid complete input, including the two OTDA companion cases. This is input-level regtest validation with supplied UTXOs and explicit script flags.
 
-Use Python 3.12 on Linux x86-64 with Git and a Rust toolchain available to build the pinned Python extension. Install the dependencies from requirements.txt before running the node comparison. It pins tx-engine to [5cb8c6e410](https://github.com/linzhm/chain-gang/commit/5cb8c6e410dbfad1c619cec3ca54d1bcaacd4eb7) from the fork's `fix/otda-complete-validation` branch. CI checks the installed Git commit before executing the full-input tests. [Conformance run](https://github.com/linzhm/bsv-script-lab/actions/runs/44392715745) The ordinary TypeScript, Rust and Go SDKs are independent of this dependency.
+Use Python 3.12 on Linux x86-64 with Git and a Rust toolchain available to build the pinned Python extension. Install the dependencies from requirements.txt before running the node comparison. It pins tx-engine to [8b60b71a12](https://github.com/linzhm/chain-gang/commit/8b60b71a12a69fdcb465d3e627dbf6f43d6ed081) from the fork's `fix/otda-complete-validation` branch. CI checks the installed Git commit before executing the full-input tests. The ordinary TypeScript, Rust and Go SDKs are independent of this dependency.
 
 ```sh
 cd projects/p2pkh-r1/reference

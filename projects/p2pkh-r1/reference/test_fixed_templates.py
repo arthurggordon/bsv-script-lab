@@ -23,6 +23,7 @@ def script(raw):
 
 
 P2PKH = script(bytes.fromhex("76a914" + "00" * 20 + "88ac"))
+CHRONICLE_MAINNET_HEIGHT = 943_835
 
 
 class FixedTemplateTests(unittest.TestCase):
@@ -90,9 +91,8 @@ class FixedTemplateTests(unittest.TestCase):
             )
             for changed in changed_outputs:
                 signed = Tx(2, compact.tx_ins, changed, compact.locktime)
-                heights = [(p.id(), 0, 3) for p in prev]
                 with self.assertRaises(ValueError):
-                    signed.validate_with_chronicle_context(prev, 4, 2, heights, True)
+                    signed.validate_at_height(prev, CHRONICLE_MAINNET_HEIGHT, "BSV_Mainnet")
                 for i in range(len(prev)):
                     check(signed, prev, i, valid=False)
 
@@ -133,7 +133,6 @@ class FixedTemplateTests(unittest.TestCase):
 
     @staticmethod
     def check_chronicle(tx, funding, *, push_only=False):
-        heights = [(p.id(), 0, 3) for p in funding]
-        tx.validate_with_chronicle_context(funding, 4, 2, heights, True)
+        tx.validate_at_height(funding, CHRONICLE_MAINNET_HEIGHT, "BSV_Mainnet")
         for i in range(len(funding)):
             check(tx, funding, i, extra_flags=(1 << 5) if push_only else 0)
