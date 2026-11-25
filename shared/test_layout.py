@@ -21,7 +21,7 @@ class LayoutTests(unittest.TestCase):
             self.assertEqual(rebuilt,raw[:208]+owner+raw[228:])
 
     def test_project_resources_and_local_links(self):
-        for name in ('p2pkh-r1','p2pkh-sm2'):
+        for name in ('p2pkh-r1','p2pkh-r1-deferred','p2pkh-sm2'):
             for child in ('README.md','docs','reference','template'):
                 self.assertTrue((ROOT/'projects'/name/child).exists())
         for path in ROOT.rglob('*.md'):
