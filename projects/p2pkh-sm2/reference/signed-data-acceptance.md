@@ -121,7 +121,7 @@ checks the adapter's actual decision.
 | §8 table 2 `digestAlgorithms` and table 3 `digestAlgorithm` | The fixture crosses SM3 and unkeyed SM3 with absent or DER NULL parameters in both fields. Wrong OIDs, keyed SM3, malformed NULL and a missing identifier are tested individually. The payment profile also rejects two entries that each pass as the sole SM3 entry. This isolates the payment cardinality rule. |
 | §8 table 2 `encapContentInfo` | Matrix covers attachment, detachment and a different message. A different content type is rejected by the payment profile. |
 | §6.6 and §8 table 3 `issuerAndSerialNumber` | Pinned identifier in positive cases. Wrong identifier, SKI and malformed configured serial numbers are rejected. A matching pinned and encoded identifier with ASN.1 `NULL` in the issuer RDN position also fails, along with empty RDN and malformed attribute cases. |
-| §8 table 2 `signerInfos` | Payment fixtures reject zero signers, accept one and reject two. The general verifier accepts two trusted OpenSSL signers in attached and detached modes, including a mixed direct and signed-attribute envelope. A wrong SM2 user ID on the second signature or an absent trusted key fails the envelope. |
+| §8 table 2 `signerInfos` | Payment fixtures reject zero signers, accept one and reject two. The general verifier accepts two trusted OpenSSL signers in attached and detached modes, including a mixed direct and signed-attribute envelope. A wrong SM2 user ID on the second signature or an absent trusted key fails the envelope. Repeated signature entries with the same authenticated payload share one message digest and one SM2 verification. |
 | §8 table 3 `signedAttrs` and signing rules after table 3 | OpenSSL verifies independently signed attribute sets with both matching and mismatching `messageDigest`. The general verifier requires exactly one digest attribute with one OCTET STRING matching the SM3 of the original content. Signed fixtures cover missing, duplicated, mistyped, truncated and mismatching digests, a wrong DER signing tag and unsorted attributes. The payment policy rejects attribute signatures. |
 | §8 table 3 `signatureAlgorithm` and `signature` | Crossed algorithm and signature modes. Separate cases exercise missing, non-canonical and out-of-range signature integers in both scalar positions. |
 | §8 table 2 `certificates` and `crls`, table 3 `unsignedAttrs` | Both content modes cross all declared member states. Separate regressions reject empty issuers, zero and overlong certificate serial numbers, CRLs without `nextUpdate`, and malformed BOOLEAN and INTEGER values. Controls include the maximum valid 20-octet certificate serial and canonical signed integers. |
@@ -334,7 +334,7 @@ revocation entry determines `revoked`. An absent entry yields
 | Normative area | Executable evidence |
 | --- | --- |
 | RFC 5280 §6.3.3(a) | Fixtures cover an inclusive `thisUpdate`, an exclusive `nextUpdate`, future and expired lists, release after an older hold, conflicting revisions and an entry dated after the assessment time. The latest available issue for a scope controls freshness. |
-| RFC 5280 §6.3.3(b) and issuer fallback | Positive and negative witnesses vary direct and delegated issuer names, the indirect flag, IDP matching, full and relative names, the fallback issuer point, and CA, end-entity and attribute-certificate scopes. |
+| RFC 5280 §6.3.3(b) and explicit distribution-point policy | Positive and negative witnesses vary direct and delegated issuer names, the indirect flag, IDP matching, full and relative names, and CA, end-entity and attribute-certificate scopes. The assessor uses the issuer default point only when the certificate omits the distribution-points extension. |
 | RFC 5280 §§6.3.2 and 6.3.3(d)–(l) | Fixtures vary certificate and CRL reason masks independently, combine complementary scopes or distribution points, and distinguish partial coverage from a conclusive result. A future-dated entry or reason contradicting its CRL's mask prevents that snapshot from contributing coverage for the entry. |
 | OpenSSL comparison | CLI fixtures check five cases for matching and mismatched scope, revocation, a future CRL and an expired CRL. The six existing base/delta certificate outcomes also exercise the assessment against independently verified CLI results. |
 
@@ -354,6 +354,9 @@ intermediate, then passes only time-valid certificates to OpenSSL. OpenSSL
 validates both paths with a trust store containing only the explicit anchor.
 The target uses generic path validation and the CRL signer uses
 the CRL-signing purpose. Path policy processing starts with `anyPolicy`.
+A single 15-second budget covers path validation. Strict revocation
+assessment maps OpenSSL's selected chain to supplied DER subjects in process.
+Unused intermediates require no additional OpenSSL processes.
 A caller can also pin an intermediate as its
 trust anchor. Path rejection aborts the assessment.
 

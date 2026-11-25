@@ -4,7 +4,9 @@ from pathlib import Path
 import re
 import subprocess
 from tempfile import TemporaryDirectory
+from time import monotonic
 
+from asn1crypto.x509 import Name
 from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509 import load_der_x509_certificate
 
@@ -32,36 +34,50 @@ def _require_validity(certificate, role, when):
         raise ValueError(f'{role} certificate path validation failed: {error}')
 
 
-def _openssl(command, workspace, *, data=None):
+def _openssl(command, workspace, *, deadline):
+    timeout = deadline - monotonic()
+    if timeout <= 0:
+        raise ValueError('OpenSSL certificate path validation timed out')
     try:
-        return subprocess.run(command, cwd=workspace, input=data, capture_output=True, timeout=15)
+        return subprocess.run(command, cwd=workspace, capture_output=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ValueError('OpenSSL certificate path validation could not run') from error
 
 
-def _openssl_subject(pem, workspace):
-    result = _openssl(['openssl', 'x509', '-noout', '-subject', '-nameopt', 'RFC2253'], workspace, data=pem)
-    subject = result.stdout.rstrip(b'\r\n')
-    if result.returncode != 0 or not subject.startswith(b'subject=') or b'\n' in subject:
-        raise ValueError('OpenSSL could not identify a certificate path subject')
-    return subject.removeprefix(b'subject=')
+def _subject_key(certificate):
+    # In -show_chain, request numeric OIDs and DER dumps for all values.
+    # RDNs appear in reverse order, with unordered attributes inside each
+    # RDN. DER hex keeps separators and untrusted text out of the labels.
+    name = Name.load(certificate.subject.public_bytes(), strict=True)
+    return tuple(
+        tuple(sorted(f"{attribute['type'].dotted}=#{attribute['value'].dump().hex().upper()}".encode('ascii')
+                     for attribute in rdn))
+        for rdn in reversed(name.chosen)
+    )
 
 
-def _selected_path(stdout, candidate, trust_anchor, subjects, intermediates):
+def _reported_subject(label):
+    return tuple(tuple(sorted(rdn.split(b'+'))) for rdn in label.split(b',')) if label else ()
+
+
+def _selected_path(stdout, candidate, trust_anchor, subjects, intermediate_subjects):
     marker = b' (untrusted)'
     rows = re.findall(rb'^depth=([0-9]+): (.*)$', stdout, re.MULTILINE)
     if (not rows or [int(depth) for depth, _ in rows] != list(range(len(rows)))
-            or rows[-1][1] != subjects[trust_anchor]):
+            or _reported_subject(rows[-1][1]) != subjects[trust_anchor]):
         raise ValueError('OpenSSL could not identify the selected certificate path to the trust anchor')
     if len(rows) == 1:
         if candidate != trust_anchor:
             raise ValueError('OpenSSL selected a different certificate as the target trust anchor')
         return (trust_anchor,)
-    if rows[0][1] != subjects[candidate] + marker:
+    leaf = rows[0][1]
+    if not leaf.endswith(marker) or _reported_subject(leaf.removesuffix(marker)) != subjects[candidate]:
         raise ValueError('OpenSSL could not identify the selected path target')
     chain = [candidate]
     for _, label in rows[1:-1]:
-        matches = [cert for cert in intermediates if subjects[cert] + marker == label]
+        if not label.endswith(marker):
+            raise ValueError('OpenSSL could not identify a selected path intermediate')
+        matches = intermediate_subjects.get(_reported_subject(label.removesuffix(marker)), ())
         if len(matches) != 1 or matches[0] in chain or matches[0] == trust_anchor:
             raise ValueError('selected certificate path has an ambiguous intermediate subject')
         chain.append(matches[0])
@@ -70,14 +86,25 @@ def _selected_path(stdout, candidate, trust_anchor, subjects, intermediates):
 
 def verify_revocation_paths(target, signers, *, trust_anchor, intermediates, validation_time, identify=False):
     """Validate paths under one anchor and optionally return the selected DER chains."""
+    deadline = monotonic() + 15
     anchor = _load_certificate(trust_anchor, 'trust anchor')
     _require_validity(anchor, 'trust anchor', validation_time)
     anchor_pem = anchor.public_bytes(Encoding.PEM)
     untrusted = {}
+    subjects = {trust_anchor: _subject_key(anchor)} if identify else {}
+    intermediate_subjects = {}
     for encoded in intermediates:
+        if monotonic() >= deadline:
+            raise ValueError('OpenSSL certificate path validation timed out')
+        if isinstance(encoded, bytes) and encoded in untrusted:
+            continue
         certificate = _load_certificate(encoded, 'intermediate')
         if _validity_error(certificate, validation_time) is None:
             untrusted[encoded] = certificate.public_bytes(Encoding.PEM)
+            if identify:
+                subject = _subject_key(certificate)
+                subjects[encoded] = subject
+                intermediate_subjects.setdefault(subject, []).append(encoded)
     untrusted_pem = b''.join(untrusted.values())
     with TemporaryDirectory(prefix='bsv-x509-revocation-path-') as directory:
         workspace = Path(directory)
@@ -95,23 +122,21 @@ def verify_revocation_paths(target, signers, *, trust_anchor, intermediates, val
         certificates = [(target, 'target', 'any')]
         certificates += [(cert, 'CRL signer', 'crlsign') for cert in signers]
         if identify:
-            command += ['-show_chain', '-nameopt', 'RFC2253']
-            subjects = {encoded: _openssl_subject(pem, workspace)
-                        for encoded, pem in {trust_anchor: anchor_pem, **untrusted}.items()}
+            command += ['-show_chain', '-nameopt', 'RFC2253,oid,dump_all,dump_der']
         selected = {}
         for encoded, role, purpose in certificates:
             certificate = _load_certificate(encoded, role)
             _require_validity(certificate, role, validation_time)
             pem = certificate.public_bytes(Encoding.PEM)
             (workspace / 'candidate.pem').write_bytes(pem)
-            result = _openssl([*command, '-purpose', purpose, 'candidate.pem'], workspace)
+            result = _openssl([*command, '-purpose', purpose, 'candidate.pem'], workspace, deadline=deadline)
             if result.returncode != 0:
                 detail = ' '.join(result.stderr.decode(errors='replace').split())
                 raise ValueError(f'{role} certificate path validation failed: {detail}')
             if identify:
                 if encoded not in subjects:
-                    subjects[encoded] = _openssl_subject(pem, workspace)
-                chain = _selected_path(result.stdout, encoded, trust_anchor, subjects, untrusted)
+                    subjects[encoded] = _subject_key(certificate)
+                chain = _selected_path(result.stdout, encoded, trust_anchor, subjects, intermediate_subjects)
                 if encoded in selected and selected[encoded] != chain:
                     raise ValueError('OpenSSL selected different target and CRL signer paths for the same certificate')
                 selected[encoded] = chain

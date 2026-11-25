@@ -57,7 +57,7 @@ OTDA，包括混用签名模式的输入、全 SM2 的两进两出付款、由�
 检验激活标志带来的差异。
 
 [标准向量](../template/sm2-standard.json) · [BSV Node 源码](https://github.com/bitcoin-sv/bitcoin-sv/tree/6504a3aff65ba97c0f6c80962b033e35ecbfed4b)
-· [chain-gang 源码](https://github.com/linzhm/chain-gang/tree/5cb8c6e410dbfad1c619cec3ca54d1bcaacd4eb7)
+· [chain-gang 源码](https://github.com/linzhm/chain-gang/tree/8b60b71a12a69fdcb465d3e627dbf6f43d6ed081)
 
 ## SignedData 付款接入
 
