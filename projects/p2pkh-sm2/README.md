@@ -1,30 +1,38 @@
 # P2PKH-SM2 v1.0.0
 
-[BSV Script Lab](../../README.md)
+[简体中文](README.zh-CN.md) · [BSV Script Lab](../../README.md)
 
-A BSV payment template for the hash of an uncompressed curveSM2 public key. The owner authorizes the current input using a standard SM2/SM3 message signature. Bitcoin Script computes ZA and SM3, verifies the SM2 equation, and binds the approved message to the actual spending transaction through PUSHTX and native `OP_CHECKSIG`.
+P2PKH-SM2 lets a payer lock a BSV output to the HASH160 of the recipient’s
+uncompressed SM2 public key. To spend the output, the recipient reveals the
+public key and supplies one SM2 signature for the current input. Bitcoin Script
+uses SM3 to compute the SM2 identity digest ZA and the message digest. It
+verifies the SM2 signature and binds the authorization to the spending
+transaction through PUSHTX and native `OP_CHECKSIG`.
 
-付款人凭收款人的 SM2 公钥哈希创建输出。收款人对当前交易签名一次，脚本验证 SM2 签名、ZA 用户标识绑定和实际交易绑定。解锁数据不携带父交易或历史签名，常规 ForkID 连续转付时，每个输入的解锁脚本保持 291 字节。
+## Release baseline
 
-| Property | v1.0.0 |
-|---|---|
-| Curve and signature | curveSM2 / SM2 |
-| Message hash | SM3 with ZA |
-| Owner | HASH160 of `04 || X_BE32 || Y_BE32` |
-| SM2 user ID | ASCII `1234567812345678`, fixed by this template |
-| Coverage | ALL, NONE, SINGLE, each with optional ANYONECANPAY, using BIP143 or Chronicle OTDA |
-| Lock / ordinary unlock | 144,925 / 291 bytes (BIP143); ordinary OTDA varies with the covered transaction data |
-| Witness | preimage, public key, raw `r || s` |
-| Current API | Python reference; external device/message-sign callback |
+v1.0.0 is the first public release. The generator and the Python wallet
+identify its canonical locking script as template version `1`.
 
-`sign_payment` uses `0x41`. Use `sign_input` to select coverage per input, including a mix of both algorithms in one transaction. Provide the target network’s Chronicle activation state when signing OTDA. An unpaired OTDA SINGLE uses a 294-byte witness and binds the owner’s authorization to the current outpoint.
+| Property | Value |
+| --- | --- |
+| Recipient identifier | HASH160 of the 65-byte public key `04 \|\| X_BE32 \|\| Y_BE32` |
+| SM2 user ID | The fixed ASCII value `1234567812345678` |
+| Locking script | 144,925 bytes |
+| Unlocking script | 291 bytes with ForkID, 294 bytes with unpaired OTDA SINGLE, and transaction-dependent for other OTDA modes |
+| Unlocking stack | Signing preimage, uncompressed public key, and 64-byte `r \|\| s` signature |
+| Signature modes | ForkID and Chronicle OTDA, each with ALL, NONE, or SINGLE and optional ANYONECANPAY |
 
-[中文规范](docs/spec.zh-CN.md) · [English specification](docs/spec.en.md) · [Reference and tests](reference/README.md) · [Layout](template/layout.json) · [Standard vector](template/sm2-standard.json) · [Payment vector](template/spend-all.json) · [16 sighash vectors](template/sighash-modes.json)
+The [release](https://github.com/linzhm/bsv-script-lab/releases/tag/p2pkh-sm2-v1.0.0)
+includes the [layout manifest](template/layout.json),
+[standard SM2 vector](template/sm2-standard.json),
+[complete payment vector](template/spend-all.json), and
+[16 signing preimages](template/sighash-modes.json).
 
-The wallet accepts [GB/T 35275-2026 SignedData](reference/README.md#signeddata-payment-interop)
-from a configured signer using the direct, single-signer payment profile.
-Both [Python](reference/interop/python-signer/README.md) and
-[Rust](reference/interop/rust-signer/README.md) provide a test signer CLI.
+## Generate a locking script
+
+Run these commands from the repository root. The owner hash below is an
+example. Substitute the recipient’s HASH160 for an actual output.
 
 ```sh
 cd projects/p2pkh-sm2/reference
@@ -32,10 +40,23 @@ python3 generate_lock.py --owner-hash160 000102030405060708090a0b0c0d0e0f1011121
 python3 generate_lock.py --owner-hash160 000102030405060708090a0b0c0d0e0f10111213 --format raw > scriptPubKey.bin
 ```
 
-The generator emits the v1.0.0 baseline by default. Its JSON output and
-the Python wallet identify the template as version `1`. The canonical program
-is reproducibly generated from source. Its manifest pins the length, owner
-offset, base hash and fixed-byte fingerprint.
+The first command reports the template version, byte length, and SHA-256 for
+the supplied owner. The second writes the exact locking script bytes. Use
+`--public-key` to supply the recipient’s uncompressed public key instead of
+its hash. The generator validates the public key before hashing it.
 
-`v1.0.0` 是首个公开版本，模板编号为 `1`。试验阶段的模板见 Git 开发历史。
-链下封装使用国标规定的 `SignedData.version = 1` 和 `SignerInfo.version = 2`。
+## Authorize and verify a payment
+
+Use `sign_payment` for a one-input ForkID ALL payment (`0x41`). Use
+`sign_input` to choose a signature mode for each input of a prepared
+transaction. For OTDA, pass the Chronicle activation state for the actual
+spend. The wallet calls an external signer and verifies the returned signature
+before building the unlocking script. [Protocol specification](docs/spec.en.md)
+· [Python reference and node tests](reference/README.md)
+
+The wallet adapter accepts a direct SM2 signature from a single signer in a
+GB/T 35275-2026 `SignedData` envelope. The envelope uses
+`SignedData.version = 1` and `SignerInfo.version = 2`. The Python and Rust
+command-line signers use dedicated test keys. [SignedData integration](reference/README.md#signeddata-payment-interop)
+· [Python test signer](reference/interop/python-signer/README.md)
+· [Rust test signer](reference/interop/rust-signer/README.md)

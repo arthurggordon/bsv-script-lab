@@ -1,16 +1,25 @@
-# P2PKH-SM2 reference
+# P2PKH-SM2 reference guide
 
-Run from this directory. Python 3.12+, OpenSSL with SM2/SM3, and `ecdsa==0.19.1` are sufficient for local tests:
+[简体中文](README.zh-CN.md) · [Project overview](../README.md)
+
+## Run the tests
+
+Run the commands below from `projects/p2pkh-sm2/reference`. Use Python 3.12
+or later and OpenSSL with SM2 and SM3 support for the local tests.
 
 ```sh
 python3 -m pip install ecdsa==0.19.1
 python3 -m unittest -v test_sm2
-python3 generate_lock.py --owner-hash160 000102030405060708090a0b0c0d0e0f10111213 --format hex
 ```
 
-`sm2.py` defines curve parameters, ZA, digest verification and an **explicit-nonce test-only** signer. `sm3_script.py` unrolls SM3 into ordinary Script bytecode. `asm/` contains SM2 group verification, scalar multiplication and PUSHTX. `p2pkh_sm2.py` is the wallet API. No new consensus opcode is used.
+These tests compare SM3 padding boundaries and fixed-prefix states against the
+host SM3 implementation, check the published SM2 vector, and verify a payment
+signed with an OpenSSL-generated key. The local Script evaluator exercises the
+generated opcodes. The complete-input tests also use independent engines.
 
-The local evaluator is a development harness. For independent complete-input validation, use Linux x86-64 with Rust, install the pinned extension, then run the mode suite and the node comparison:
+On Linux x86-64 with Rust and Cargo, install the [reference dependencies](requirements.txt)
+and run the complete-input tests against the pinned chain-gang extension and
+BSV Node 1.2.3.
 
 ```sh
 python3 -m pip install -r requirements.txt
@@ -18,11 +27,26 @@ python3 -m unittest -v test_sighash
 bash verify.sh
 ```
 
-This checks three consecutive transfers, mixed inputs and multiple outputs, output/input mutations, invalid keys/scalars/identities, forged signing preimages, and extra witness items in both BSV Node 1.2.3 and chain-gang. The node launcher checks the downloaded archive against the release checksum and uses a temporary regtest directory with no peers. It does not broadcast transactions.
+The node launcher checks the downloaded archive against the release checksum
+and uses a temporary regtest directory with no peers. It does not broadcast
+transactions. Tests cover consecutive transfers, modified inputs and outputs,
+invalid keys and scalars, incorrect user IDs, forged preimages, and extra
+witness items.
 
-`test_sm2.py` also checks SM3 padding boundaries and fixed-prefix midstates against the host SM3 implementation, the published SM2 vector, and a real OpenSSL-generated SM2 key/signature accepted by the generated script. All fixture private scalars and nonces are public test data.
+## Implementation map
 
-### v1.0.0 template and Chronicle conformance
+| Source | Role |
+| --- | --- |
+| [`sm2.py`](sm2.py) | Curve parameters, ZA, signature verification, and a test signer that takes an explicit nonce |
+| [`sm3_script.py`](sm3_script.py) | Emits SM3 as unrolled Script bytecode |
+| [`asm/`](asm/) | Curve arithmetic, verification, and PUSHTX transaction binding |
+| [`p2pkh_sm2.py`](p2pkh_sm2.py) | Wallet API and external signing callback |
+| [`signed_data.py`](signed_data.py) | SignedData payment adapter, structural validation, and signature verification |
+
+Fixture private keys and nonces are public test data. Use an external signer
+for production keys.
+
+## v1.0.0 template and Chronicle conformance
 
 The zero-owner script is 144,925 bytes. Its SHA-256 is
 `196dfcb8244e863521447c7069297d31938fbd80a83d5976af618cf7fbcf9462`.
@@ -128,6 +152,13 @@ absent parameters or the exact DER NULL `05 00`. The required digest in
 `signedAttrs` uses PKCS #9 OID `1.2.840.113549.1.9.4` and carries one DER
 OCTET STRING of 32 bytes. [Profile evidence](signed-data-acceptance.md#signed-attributes-and-algorithm-parameters)
 
+The general signature verifier uses the original DER `[0]` field bytes
+for GB/T 35275-2026 `signedAttrs`. Select `signed_attrs_encoding='cms-set'`
+explicitly for a CMS-style signature over the universal SET encoding.
+Each verification uses the selected encoding. [Encoding evidence](signed-data-acceptance.md#signed-attributes-and-algorithm-parameters)
+
+### Structure and ASN.1 schemas
+
 For schema-aware `AttributeValue` validation, pass `attribute_schemas`, a
 mapping from dotted attribute OIDs to `asn1crypto` ASN.1 classes. Each
 declared value is decoded as its ASN.1 type and checked against the canonical
@@ -151,6 +182,8 @@ value against its canonical DER encoding. In this mode, an otherwise
 unrecognized extension without a supplied schema raises
 `MissingExtensionSchema`. The check applies to certificates, CRLs and
 individual revoked-certificate entries.
+
+## Certificates and revocation lists
 
 Use `validate_crl_series(crls, extension_schemas=...)` to compare the
 issuance numbers of DER CRLs for one authenticated issuer and scope. Use
@@ -195,8 +228,3 @@ require fresh, complete revocation evidence for each selected intermediate
 and CRL signing certificate. Supply a CRL snapshot from each certificate's
 validated parent. The check rejects an ambiguous intermediate path,
 missing coverage, and revoked intermediates or signers.
-
-The general signature verifier uses the original DER `[0]` field bytes
-for GB/T 35275-2026 `signedAttrs`. Select `signed_attrs_encoding='cms-set'`
-explicitly for a CMS-style signature over the universal SET encoding.
-Each verification uses the selected encoding. [Encoding evidence](signed-data-acceptance.md#signed-attributes-and-algorithm-parameters)
