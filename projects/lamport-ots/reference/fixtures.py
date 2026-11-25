@@ -63,16 +63,17 @@ def cases():
     yield 'other_outpoint',replace(multi,inputs=(replace(multi.inputs[0],txid=b'\x77'*32),multi.inputs[1])),[other,parent],1,False
 
 
-def mode_fixture(flag, *, paired=True):
+def mode_fixture(flag, *, paired=True, version=2, lock_factory=None):
     from script import locking_script
     from payment import sign_spend
 
     secret = test_secret(b'universal/' + bytes([flag, paired]))
     key = public_key(secret)
-    parent = Transaction((Input(b'\x62'*32, 0),), (Output(10000, locking_script(key)),))
+    lock_factory = lock_factory or locking_script
+    parent = Transaction((Input(b'\x62'*32, 0),), (Output(10000, lock_factory(key)),))
     other = Transaction((Input(b'\x44'*32, 0),), (Output(1000, b'\x51'),))
     outputs = (Output(500, b'\x51'), Output(10400, b'\x51')) if paired else (Output(10900, b'\x51'),)
-    tx = Transaction((Input(other.txid_wire(), 0), Input(parent.txid_wire(), 0)), outputs)
+    tx = Transaction((Input(other.txid_wire(), 0), Input(parent.txid_wire(), 0)), outputs, version=version)
     signed = sign_spend(tx, 1, parent.serialize(), key, lambda digest: sign_digest(secret, digest), sighash=flag)
     return secret, (other, parent), signed
 

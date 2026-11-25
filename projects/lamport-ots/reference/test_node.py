@@ -12,19 +12,23 @@ from shared.transaction import Output, Transaction, Input
 from shared.script import push
 
 
-def node_check(tx, parent, index):
+def node_check(tx, parent, index, *, chronicle=True, funding_height=3):
     previous = parent.outputs[0]
     cookie = Path(os.environ['REGTEST_COOKIE']).read_text().strip().split(':',1)
-    flags = sum(1<<b for b in (1,2,3,16,18,19,20,21))
+    flags = sum(1<<b for b in (1,2,3,16,18,19))
+    if chronicle:
+        flags |= 1 << 20
+        if funding_height >= 2:
+            flags |= 1 << 21
     request = dict(tx=tx.serialize().hex(),n=index,flags=flags,reportflags=True,
-                   txo=dict(lock=previous.script.hex(),value=previous.value,height=3))
+                   txo=dict(lock=previous.script.hex(),value=previous.value,height=funding_height))
     response = requests.post(os.environ.get('REGTEST_URL','http://127.0.0.1:18443'),auth=tuple(cookie),timeout=30,
         json=dict(jsonrpc='1.0',id=1,method='verifyscript',params=[[request],False,5000]))
     response.raise_for_status()
     data = response.json()
     if data.get('error'): raise AssertionError(data['error'])
     result = data['result'][0]
-    if result['flags'] & flags != flags: raise AssertionError(result)
+    if result['flags'] != flags: raise AssertionError(result)
     if result['result'] not in ('ok','error'): raise AssertionError(result)
     return result['result'] == 'ok'
 
