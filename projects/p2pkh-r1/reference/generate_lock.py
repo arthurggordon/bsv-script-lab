@@ -30,20 +30,24 @@ def main():
     owner.add_argument("--public-key", type=owner_from_key, dest="key_hash", metavar="HEX")
     owner.add_argument("--owner-hash160", type=owner_from_hash, metavar="HEX")
     parser.add_argument("--format", choices=("manifest", "raw"), default="manifest")
+    parser.add_argument("--compiled-curve", action="store_true", help="generate the experimental field AST template")
     args = parser.parse_args()
     owner_hash = args.key_hash if args.key_hash is not None else args.owner_hash160
-    raw = locking_script_from_owner_hash(owner_hash)
+    raw = locking_script_from_owner_hash(owner_hash, compiled_curve=args.compiled_curve)
     if recognize(raw) != owner_hash:
         raise RuntimeError("generated script failed owner or template verification")
     if args.format == "raw":
         sys.stdout.buffer.write(raw)
         return
-    print(json.dumps({
+    manifest = {
         "template": "P2PKH-R1",
         "owner_hash160": owner_hash.hex(),
         "script_bytes": len(raw),
         "script_sha256": sha256(raw).hexdigest(),
-    }, indent=2))
+    }
+    if args.compiled_curve:
+        manifest["curve_compiler"] = "field-ast"
+    print(json.dumps(manifest, indent=2))
 
 
 if __name__ == "__main__":
