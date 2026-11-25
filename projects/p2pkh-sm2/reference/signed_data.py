@@ -12,11 +12,11 @@ from asn1crypto.x509 import Certificate as ASN1Certificate, DirectoryString, Nam
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.x509 import CertificateRevocationList, DirectoryName, DistributionPoint
 from cryptography.x509 import IssuingDistributionPoint, Name, ReasonFlags, Version
-from cryptography.x509 import ExtensionNotFound, UnrecognizedExtension, UnsupportedGeneralNameType
+from cryptography.x509 import DuplicateExtension, ExtensionNotFound, UnrecognizedExtension, UnsupportedGeneralNameType
 from cryptography.x509 import load_der_x509_certificate, load_der_x509_crl
 from cryptography.x509.oid import CRLEntryExtensionOID, ExtensionOID
 
-from certificate_path import verify_revocation_paths
+from certificate_path import _load_certificate, verify_revocation_paths
 from sm2 import N, USER_ID, be32, parse_public, sm3, verify
 
 
@@ -835,10 +835,19 @@ def _extension_value(extensions, oid):
         return None
 
 
+def _revocation_certificate(encoded, role):
+    """Decode a certificate and its extensions, reporting every failure as ValueError."""
+    certificate = _load_certificate(encoded, role)
+    try:
+        # Known extension values are decoded on first access.
+        certificate.extensions
+    except (DuplicateExtension, UnsupportedGeneralNameType, ValueError) as error:
+        raise ValueError(f'invalid {role} certificate extension: {error}') from error
+    return certificate
+
+
 def _crl_signer_certificate(encoded):
-    if not isinstance(encoded, bytes):
-        raise ValueError('expected a DER CRL issuer certificate')
-    certificate = load_der_x509_certificate(encoded)
+    certificate = _revocation_certificate(encoded, 'CRL issuer')
     if not certificate.subject.rdns:
         raise ValueError('CRL issuer certificate requires a nonempty subject')
     usage = _extension_value(certificate.extensions, ExtensionOID.KEY_USAGE)
@@ -1202,7 +1211,7 @@ def assess_certificate_revocation(certificate, snapshots, *, validation_time, tr
 
 
 def _assess_revocation_status(certificate, snapshots, validation_time):
-    target = load_der_x509_certificate(certificate)
+    target = _revocation_certificate(certificate, 'target')
     basic = _extension_value(target.extensions, ExtensionOID.BASIC_CONSTRAINTS)
     is_ca = basic is not None and basic.ca
     distribution_points = _extension_value(target.extensions, ExtensionOID.CRL_DISTRIBUTION_POINTS) or ()

@@ -2122,6 +2122,49 @@ class SignedDataReview(SignedDataFixtures):
                 self.assertEqual(assess_certificate_revocation(target, [snapshot], validation_time=check_time).status, expected)
         COMPLETED_WITNESSES.add('crl_assessment_scope')
 
+    def test_revocation_rejects_undecodable_certificates_with_value_error(self):
+        certificate, issue_crl, issue, _, _, _, check_time, _ = self.crl_assessment_fixture()
+        encoded_der = serialization.Encoding.DER
+
+        def version_2(cert):
+            encoded = ASN1Certificate.load(cert.public_bytes(encoded_der))
+            encoded['tbs_certificate']['version'] = 'v2'
+            encoded['tbs_certificate']['extensions'] = None
+            return encoded.dump()
+
+        def duplicate_extension(cert):
+            encoded = ASN1Certificate.load(cert.public_bytes(encoded_der))
+            extensions = encoded['tbs_certificate']['extensions']
+            extensions.append(extensions[-1].copy())
+            return encoded.dump()
+
+        target, issuer = certificate(), certificate(ca_cert=True)
+        crl = issue_crl().public_bytes(encoded_der)
+        anchor = issuer.public_bytes(encoded_der)
+        cases = (
+            ('v2 target', lambda: assess_certificate_revocation(version_2(target), [issue()], validation_time=check_time),
+             'unsupported target certificate version'),
+            ('duplicate target extension',
+             lambda: assess_certificate_revocation(duplicate_extension(target), [issue()], validation_time=check_time),
+             'invalid target certificate extension'),
+            ('v2 CRL issuer', lambda: load_crl_snapshot(crl, version_2(issuer)),
+             'unsupported CRL issuer certificate version'),
+            ('duplicate CRL issuer extension', lambda: load_crl_snapshot(crl, duplicate_extension(issuer)),
+             'invalid CRL issuer certificate extension'),
+            ('v2 trust anchor', lambda: assess_certificate_revocation(target.public_bytes(encoded_der), [issue()],
+                                                                      validation_time=check_time,
+                                                                      trust_anchor=version_2(issuer)),
+             'unsupported trust anchor certificate version'),
+            ('v2 intermediate', lambda: assess_certificate_revocation(target.public_bytes(encoded_der), [issue()],
+                                                                      validation_time=check_time, trust_anchor=anchor,
+                                                                      intermediates=[version_2(target)]),
+             'unsupported intermediate certificate version'),
+        )
+        for name, call, message in cases:
+            with self.subTest(name):
+                with self.assertRaisesRegex(ValueError, message):
+                    call()
+
     def test_legacy_certificate_requires_an_unrestricted_crl_scope(self):
         certificate, _, issue, _, _, _, check_time, _ = self.crl_assessment_fixture()
         encoded_der = serialization.Encoding.DER

@@ -6,7 +6,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 
 from cryptography.hazmat.primitives.serialization import Encoding
-from cryptography.x509 import load_der_x509_certificate
+from cryptography.x509 import InvalidVersion, load_der_x509_certificate
 
 
 def _load_certificate(encoded, role):
@@ -14,6 +14,10 @@ def _load_certificate(encoded, role):
         raise ValueError(f'expected a DER {role} certificate')
     try:
         return load_der_x509_certificate(encoded)
+    except InvalidVersion as error:
+        # GB/T 20518 permits v2, but this loader and the revocation logic
+        # built on it accept only v1 and v3. Fail closed with the API's type.
+        raise ValueError(f'unsupported {role} certificate version: {error}') from error
     except ValueError as error:
         raise ValueError(f'invalid DER {role} certificate') from error
 
