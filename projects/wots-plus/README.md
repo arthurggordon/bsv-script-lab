@@ -1,5 +1,7 @@
 # WOTS+ (SHA-256)
 
+**Status** · v0.1 development baseline.
+
 This experiment verifies a WOTS+ one-time signature in Bitcoin Script and binds
 it to the current BSV transaction input. It uses the RFC 8391
 `WOTSP-SHA2_256` hash chains, a 64-byte BSV public-key encoding and a

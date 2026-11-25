@@ -17,4 +17,4 @@ The [binary layout and generation vectors](template/layout.json) define recognit
 
 The Python reference wallet offers an opt-in 47,510-byte template with the full ForkID and OTDA signing modes, prebuilt lock bytes and optional OTDA witness compression. [Optimized template and measurements](reference/README.md#optimized-full-mode-template)
 
-**Status** · Developer RFC, with no assigned BRC number. The [reference tests](reference/README.md) use the fork's pinned OTDA fix. Physical-device validation and independent security review remain open.
+**Status** · v0.1 development baseline. Developer RFC, with no assigned BRC number. The [reference tests](reference/README.md) use the fork's pinned OTDA fix. Physical-device validation and independent security review remain open.

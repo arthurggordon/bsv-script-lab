@@ -1,5 +1,7 @@
 # Pure ML-DSA-44
 
+**Status** · v0.1 development baseline.
+
 The verifier uses the FIPS 204 Pure ML-DSA-44 public-key and signature
 encodings. A public key is 1,312 bytes and a signature is 2,420 bytes.
 The OpenSSL fixture uses a public test seed and deterministic signing.

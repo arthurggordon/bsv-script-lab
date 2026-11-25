@@ -17,14 +17,17 @@ Generate locking scripts, replay signed spends from reproducible vectors, and co
 
 ## Projects
 
-| Project | What it explores | Start here |
-|---|---|---|
-| [P2PKH-R1](projects/p2pkh-r1/README.md) | P-256 ECDSA authorization for a public-key hash, with a single device signature for an ordinary payment | [Specification](projects/p2pkh-r1/docs/spec.en.md) · [TypeScript, Rust and Go SDK guide](projects/p2pkh-r1/docs/sdk.en.md) |
-| [P2PKH-R1-Deferred](projects/p2pkh-r1-deferred/README.md) | A 1,435-byte funding lock that commits to an ordinary R1 output for later activation | [Format and reference checks](projects/p2pkh-r1-deferred/README.md) |
-| [P2PKH-SM2](projects/p2pkh-sm2/README.md) | An experimental payment template that verifies SM2 and computes SM3 with ZA in Script | [Specification](projects/p2pkh-sm2/docs/spec.en.md) · [Python reference](projects/p2pkh-sm2/reference/README.md) |
-| [Lamport OTS](projects/lamport-ots/README.md) | Hash-based authorization using SHA-256. Each key is for one UTXO and one signature. | [Security model](projects/lamport-ots/docs/security.md) · [Validation record](projects/lamport-ots/docs/validation.md) |
-| [WOTS+](projects/wots-plus/README.md) | SHA-256 hash-chain authorization with a 2,144-byte one-time signature | [Specification](projects/wots-plus/docs/spec.md) · [Verification](projects/wots-plus/README.md#run-the-checks) |
-| [ML-DSA-44](projects/ml-dsa/README.md) | Pure FIPS 204 message verification and a transaction-bound payment template | [Implementation and measurements](projects/ml-dsa/README.md) |
+| Project | Version | What it explores | Start here |
+|---|---|---|---|
+| [P2PKH-R1](projects/p2pkh-r1/README.md) | v0.1 | P-256 ECDSA authorization for a public-key hash, with a single device signature for an ordinary payment | [Specification](projects/p2pkh-r1/docs/spec.en.md) · [TypeScript, Rust and Go SDK guide](projects/p2pkh-r1/docs/sdk.en.md) |
+| [P2PKH-R1-Deferred](projects/p2pkh-r1-deferred/README.md) | v0.1 | A 1,435-byte funding lock that commits to an ordinary R1 output for later activation | [Format and reference checks](projects/p2pkh-r1-deferred/README.md) |
+| [P2PKH-SM2](projects/p2pkh-sm2/README.md) | v1.0.0 | A payment template that verifies SM2 and computes SM3 with ZA in Script | [Specification](projects/p2pkh-sm2/docs/spec.en.md) · [Python reference](projects/p2pkh-sm2/reference/README.md) |
+| [Lamport OTS](projects/lamport-ots/README.md) | v0.1 | Hash-based authorization using SHA-256. Each key is for one UTXO and one signature. | [Security model](projects/lamport-ots/docs/security.md) · [Validation record](projects/lamport-ots/docs/validation.md) |
+| [WOTS+](projects/wots-plus/README.md) | v0.1 | SHA-256 hash-chain authorization with a 2,144-byte one-time signature | [Specification](projects/wots-plus/docs/spec.md) · [Verification](projects/wots-plus/README.md#run-the-checks) |
+| [ML-DSA-44](projects/ml-dsa/README.md) | v0.1 | Pure FIPS 204 message verification and a transaction-bound payment template | [Implementation and measurements](projects/ml-dsa/README.md) |
+| [Native P2PK and P2PKH](projects/p2pk-p2pkh-baseline/README.md) | v0.1 | Native signature locks and complete-input acceptance fixtures | [Acceptance matrix](projects/p2pk-p2pkh-baseline/reference/acceptance.md) |
+
+Version v0.1 denotes a development baseline. Project guides describe optional templates and their validation scope.
 
 <details>
 <summary><strong>Compare script sizes</strong></summary>

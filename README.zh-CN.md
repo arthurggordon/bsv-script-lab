@@ -17,14 +17,17 @@
 
 ## 实验项目
 
-| 项目 | 研究内容 | 开发入口 |
-|---|---|---|
-| [P2PKH-R1](projects/p2pkh-r1/README.md) | 以 P-256 公钥哈希收款，普通付款由设备签名一次 | [协议规范](projects/p2pkh-r1/docs/spec.zh-CN.md) · [TypeScript、Rust 和 Go 接入](projects/p2pkh-r1/docs/sdk.zh-CN.md) |
-| [P2PKH-R1-Deferred](projects/p2pkh-r1-deferred/README.md) | 1,435 字节的入金锁承诺后续启用的 R1 输出 | [锁定格式与复现验证](projects/p2pkh-r1-deferred/README.md) |
-| [P2PKH-SM2](projects/p2pkh-sm2/README.zh-CN.md) | 用 Bitcoin Script 执行 SM2 验签，并计算 SM3 与 ZA | [协议规范](projects/p2pkh-sm2/docs/spec.zh-CN.md) · [Python 参考实现](projects/p2pkh-sm2/reference/README.zh-CN.md) |
-| [Lamport OTS](projects/lamport-ots/README.md) | 基于 SHA-256 的一次性授权。每组密钥对应一个 UTXO，只签一次。 | [安全分析](projects/lamport-ots/docs/security.md) · [验证记录](projects/lamport-ots/docs/validation.md) |
-| [WOTS+](projects/wots-plus/README.md) | 基于 SHA-256 哈希链的一次性授权，签名原始长度为 2,144 字节 | [协议规范](projects/wots-plus/docs/spec.md) · [复现验证](projects/wots-plus/README.md#run-the-checks) |
-| [ML-DSA-44](projects/ml-dsa/README.md) | FIPS 204 纯模式消息验签，以及交易绑定的付款模板 | [实现与测量](projects/ml-dsa/README.md) |
+| 项目 | 版本 | 研究内容 | 开发入口 |
+|---|---|---|---|
+| [P2PKH-R1](projects/p2pkh-r1/README.md) | v0.1 | 以 P-256 公钥哈希收款，普通付款由设备签名一次 | [协议规范](projects/p2pkh-r1/docs/spec.zh-CN.md) · [TypeScript、Rust 和 Go 接入](projects/p2pkh-r1/docs/sdk.zh-CN.md) |
+| [P2PKH-R1-Deferred](projects/p2pkh-r1-deferred/README.md) | v0.1 | 1,435 字节的入金锁承诺后续启用的 R1 输出 | [锁定格式与复现验证](projects/p2pkh-r1-deferred/README.md) |
+| [P2PKH-SM2](projects/p2pkh-sm2/README.zh-CN.md) | v1.0.0 | 用 Bitcoin Script 执行 SM2 验签，并计算 SM3 与 ZA | [协议规范](projects/p2pkh-sm2/docs/spec.zh-CN.md) · [Python 参考实现](projects/p2pkh-sm2/reference/README.zh-CN.md) |
+| [Lamport OTS](projects/lamport-ots/README.md) | v0.1 | 基于 SHA-256 的一次性授权。每组密钥对应一个 UTXO，只签一次。 | [安全分析](projects/lamport-ots/docs/security.md) · [验证记录](projects/lamport-ots/docs/validation.md) |
+| [WOTS+](projects/wots-plus/README.md) | v0.1 | 基于 SHA-256 哈希链的一次性授权，签名原始长度为 2,144 字节 | [协议规范](projects/wots-plus/docs/spec.md) · [复现验证](projects/wots-plus/README.md#run-the-checks) |
+| [ML-DSA-44](projects/ml-dsa/README.md) | v0.1 | FIPS 204 纯模式消息验签，以及交易绑定的付款模板 | [实现与测量](projects/ml-dsa/README.md) |
+| [原生 P2PK 和 P2PKH](projects/p2pk-p2pkh-baseline/README.md) | v0.1 | 原生签名锁及完整输入的验收基准 | [验收矩阵](projects/p2pk-p2pkh-baseline/reference/acceptance.md) |
+
+v0.1 表示开发基线。各项目文档记录可选模板及其验收范围。
 
 <details>
 <summary><strong>对照脚本尺寸</strong></summary>
@@ -47,7 +50,7 @@ Lamport 的锁定脚本包含公钥。普通 OTDA 路径的解锁脚本随参与
 
 ## 交易签名模式
 
-五个支付模板的参考实现均支持下列十二种 BIP143 ForkID 与 Chronicle OTDA 组合。每个输入独立选择模式，普通付款默认使用 `0x41`。 P2PKH-R1-Deferred 启用默认使用 `0x43`，每种模式都要求同索引输出存在。
+五个支付模板的参考实现均支持下列十二种 BIP143 ForkID 与 Chronicle OTDA 组合。每个输入独立选择模式，普通付款默认使用 `0x41`。P2PKH-R1-Deferred 启用默认使用 `0x43`，每种模式都要求同索引输出存在。
 
 | 输出覆盖范围 | BIP143 ForkID | ForkID 加 ANYONECANPAY | Chronicle OTDA | OTDA 加 ANYONECANPAY |
 |---|---|---|---|---|

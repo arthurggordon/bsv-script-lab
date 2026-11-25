@@ -1,5 +1,7 @@
 # Native P2PK and P2PKH baseline
 
+**Status** · v0.1 development baseline.
+
 Offline examples for conventional P2PKH and P2PK locking scripts. This is a
 test lab, not a wallet, production signer, covenant implementation, or node.
 

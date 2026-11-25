@@ -1,5 +1,7 @@
 # Lamport OTS (SHA-256)
 
+**Status** · v0.1 development baseline.
+
 Experimental, directly unrolled 256-bit Lamport one-time signatures in BSV Script.
 Includes secure random key generation, digest signing/verification, an in-memory
 one-use signing guard, complete transaction construction, and independent engine tests.

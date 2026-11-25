@@ -14,4 +14,4 @@ A 1,435-byte funding script publishes the recipient's P-256 public key HASH160 a
 
 The [binary layout and generation vectors](template/layout.json) define recognition. The [activation vector](template/activation-single.json) supplies a funding transaction and a direct activation. The [mode vectors](template/sighash-modes.json) cover all twelve selected sighash types. The [reference implementation](reference/README.md) builds complete batches, and the SDKs generate and recognize the same locks and encode prepared activation witnesses.
 
-**Status** · Experimental. BSV Node 1.2.3 conformance and independent review remain open.
+**Status** · v0.1 development baseline. See the [activation acceptance matrix](reference/acceptance.md) for the BSV Node 1.2.3 test scope. Independent review remains open.
