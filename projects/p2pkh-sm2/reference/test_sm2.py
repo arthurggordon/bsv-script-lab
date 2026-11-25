@@ -7,9 +7,10 @@ from pathlib import Path
 import random
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
-from assemble import TEMPLATE_VERSIONS, assemble
+from assemble import assemble
 from p2pkh_sm2 import *
 from sm2 import *
 from sm3_script import hash_script,compress,IV
@@ -61,8 +62,8 @@ def native_checker(tx,index,value):
     return check
 
 
-def fixture(d=1,k=2,*,template_version=2):
-    key=encode_public(mul(d)); lock=locking_script_from_public_key(key,version=template_version)
+def fixture(d=1,k=2):
+    key=encode_public(mul(d)); lock=locking_script_from_public_key(key)
     funding=Transaction((Input(b'\x22'*32,0),),(Output(1000,lock),))
     tx=Transaction((Input(funding.txid_wire(),0),),(Output(900,b'\x51'),))
     pre=preimage_all(tx,0,1000); sig=fixture_sign(d,hash256(pre),k)
@@ -140,27 +141,23 @@ class SM2Tests(unittest.TestCase):
             self.assertTrue(valid_script(lock,items,signed))
 
     def test_canonical_recognition(self):
-        for version in TEMPLATE_VERSIONS:
-            filename='layout.json' if version==2 else f'layout-v{version}.json'
-            with self.subTest(template_version=version):
-                key,lock,*_=fixture(template_version=version)
-                manifest=json.loads((ROOT/'template'/filename).read_text())
-                self.assertEqual(len(lock),manifest['script_bytes'])
-                self.assertEqual(identify(lock),(version,public_key_hash160(key)))
-                self.assertEqual(recognize(lock),public_key_hash160(key))
-                for at in (0,49,70,1000,len(lock)-1):
-                    mutated=bytearray(lock); mutated[at]^=1
-                    self.assertIsNone(recognize(bytes(mutated)))
-                self.assertIsNone(recognize(lock[:-1])); self.assertIsNone(recognize(lock+b'\0'))
+        key,lock,*_=fixture()
+        manifest=json.loads((ROOT/'template/layout.json').read_text())
+        self.assertEqual(len(lock),manifest['script_bytes'])
+        self.assertEqual(identify(lock),(1,public_key_hash160(key)))
+        self.assertEqual(recognize(lock),public_key_hash160(key))
+        for at in (0,49,70,1000,len(lock)-1):
+            mutated=bytearray(lock); mutated[at]^=1
+            self.assertIsNone(recognize(bytes(mutated)))
+        self.assertIsNone(recognize(lock[:-1])); self.assertIsNone(recognize(lock+b'\0'))
         with self.assertRaises(ValueError): locking_script_from_owner_hash(bytes(19))
         r1=bytes.fromhex('046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c2964fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5')
         with self.assertRaises(ValueError): public_key_hash160(r1)
 
     def test_full_script_random_keys(self):
-        for version in TEMPLATE_VERSIONS[1:]:
-            for d,k in ((1,2),(7,19),(19,7),(N-2,N-1),(12345,67890)):
-                key,lock,parent,tx,pre,sig=fixture(d,k,template_version=version)
-                with self.subTest(d=d,template_version=version): self.assertTrue(valid_script(lock,[pre,key,sig],tx))
+        for d,k in ((1,2),(7,19),(19,7),(N-2,N-1),(12345,67890)):
+            key,lock,parent,tx,pre,sig=fixture(d,k)
+            with self.subTest(d=d): self.assertTrue(valid_script(lock,[pre,key,sig],tx))
 
     def test_script_rejects_invalid_signature_and_key(self):
         key,lock,parent,tx,pre,sig=fixture()
@@ -210,7 +207,13 @@ class SM2Tests(unittest.TestCase):
     def test_payment_vector_and_consecutive_payments(self):
         v=json.loads((ROOT/'template/spend-all.json').read_text())
         key,lock,parent,tx,pre,sig=fixture()
+        self.assertEqual(key.hex(),v['public_key'])
+        self.assertEqual(parent.txid(),v['parent_txid'])
+        self.assertEqual(tx.serialize().hex(),v['unsigned_tx_hex'])
         self.assertEqual(pre.hex(),v['preimage_hex']); self.assertEqual(sig.hex(),v['signature_hex'])
+        self.assertEqual(hash256(pre).hex(),v['message_hex'])
+        self.assertEqual(za(key).hex(),v['za_hex'])
+        self.assertEqual(message_digest(key,hash256(pre)).hex(),v['sm2_digest_hex'])
         signed=tx.with_script(0,current_input_unlock(tx,0,1000,key,sig))
         self.assertEqual(signed.inputs[0].script.hex(),v['script_sig_hex']); self.assertEqual(signed.txid(),v['signed_txid'])
         parent=Transaction((Input(b'\x33'*32,0),),(Output(10000,lock),))
@@ -225,29 +228,28 @@ class SM2Tests(unittest.TestCase):
         with self.assertRaises(ValueError): sign_payment(parent.serialize(),0,[Output(parent.outputs[0].value-100,b'\x51')],100,key,lambda *_: bytes(64))
         with self.assertRaises(ValueError): Transaction.parse(parent.serialize()+b'\0')
 
-    def test_optimized_payment_vectors(self):
-        for version in TEMPLATE_VERSIONS[2:]:
-            with self.subTest(template_version=version):
-                self.check_payment_vector(version)
-
-    def check_payment_vector(self, version):
-        vector=json.loads((ROOT/'template'/f'spend-all-v{version}.json').read_text())
-        key,lock,parent,tx,pre,sig=fixture(template_version=version)
-        self.assertEqual(key.hex(),vector['public_key'])
-        self.assertEqual(parent.txid(),vector['parent_txid'])
-        self.assertEqual(tx.serialize().hex(),vector['unsigned_tx_hex'])
-        self.assertEqual(pre.hex(),vector['preimage_hex'])
-        self.assertEqual(hash256(pre).hex(),vector['message_hex'])
-        self.assertEqual(za(key).hex(),vector['za_hex'])
-        self.assertEqual(message_digest(key,hash256(pre)).hex(),vector['sm2_digest_hex'])
-        self.assertEqual(sig.hex(),vector['signature_hex'])
-        witness=current_input_unlock(tx,0,1000,key,sig,version=version)
-        self.assertEqual(len(witness),291)
-        self.assertEqual(witness.hex(),vector['script_sig_hex'])
-        signed=sign_payment(parent.serialize(),0,tx.outputs,100,key,lambda *_: sig)
-        self.assertEqual(signed,tx.with_script(0,witness))
-        self.assertEqual(signed.txid(),vector['signed_txid'])
-        self.assertTrue(valid_script(lock,[pre,key,sig],signed))
+    def test_release_defaults_to_pinned_v1(self):
+        manifest = json.loads((ROOT/'template/layout.json').read_text())
+        base_owner = bytes.fromhex(manifest['base_owner_hash160'])
+        lock = assemble(base_owner)
+        self.assertEqual(len(lock), 144925)
+        self.assertEqual(sha256(lock).hexdigest(), manifest['base_script_sha256'])
+        self.assertEqual(locking_script_from_owner_hash(base_owner), lock)
+        key = encode_public(mul(1))
+        self.assertEqual(identify(locking_script_from_public_key(key)), (1, public_key_hash160(key)))
+        cli = [sys.executable, str(ROOT/'reference/generate_lock.py'), '--owner-hash160', base_owner.hex()]
+        result = json.loads(subprocess.check_output(cli))
+        self.assertEqual(result['version'], 1)
+        self.assertEqual(result['script_sha256'], manifest['base_script_sha256'])
+        self.assertEqual(subprocess.check_output([*cli, '--format', 'raw']), lock)
+        self.assertEqual(subprocess.check_output([*cli, '--version', '1', '--format', 'raw']), lock)
+        for version in (0, 2, 3, 4):
+            with self.subTest(version=version):
+                for construct in (assemble, locking_script_from_owner_hash):
+                    with self.assertRaisesRegex(ValueError, 'unsupported P2PKH-SM2 template'):
+                        construct(base_owner, version=version)
+                self.assertNotEqual(subprocess.run([*cli, '--version', str(version)],
+                                                   capture_output=True).returncode, 0)
 
 
 if __name__=='__main__': unittest.main()

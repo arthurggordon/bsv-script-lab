@@ -22,31 +22,26 @@ This checks three consecutive transfers, mixed inputs and multiple outputs, outp
 
 `test_sm2.py` also checks SM3 padding boundaries and fixed-prefix midstates against the host SM3 implementation, the published SM2 vector, and a real OpenSSL-generated SM2 key/signature accepted by the generated script. All fixture private scalars and nonces are public test data.
 
-### Chronicle conformance
+### v1.0.0 template and Chronicle conformance
 
-The v2 zero-owner script is 199,777 bytes. Its SHA-256 is `2458fd154c157eec3ad4ddd9a2411baae23f53aef417c43e296653cf0e2b5ab9`. The [16 deterministic preimages](../template/sighash-modes.json) cover all paired modes and each unpaired SINGLE variant. The tests change other inputs, individual outputs, sequences and locktime after signing. They also validate a mixed BIP143/OTDA transaction and reproduce the v1 payment txid.
+The zero-owner script is 144,925 bytes. Its SHA-256 is
+`196dfcb8244e863521447c7069297d31938fbd80a83d5976af618cf7fbcf9462`.
+The generator and Python constructors emit template version `1` by default.
+The [layout manifest](../template/layout.json) pins the canonical bytecode,
+and the [payment vector](../template/spend-all.json) pins a complete ForkID
+payment. [16 deterministic preimages](../template/sighash-modes.json)
+cover all paired modes and each unpaired SINGLE variant.
 
-For this revision, the 112 complete-input coverage cases were run through both pinned chain-gang and the BSV Node 1.2.3 script interpreter, including six malformed preimages signed by the correct SM2 test key. The latter engine also ran 48 activation cases with explicit flags for pre-Chronicle spends, post-activation spends of older outputs, and post-activation spends of new outputs. To isolate activation from the transaction version, these 48 cases all used version 1. The Node result used a native macOS build of `VerifyScript` and `TransactionSignatureChecker` on serialized transactions and UTXO values. Use `bash verify.sh` to repeat the checks through Linux regtest RPC. The native result covers script validation only.
+The script executes all SM3 compression rounds. It reuses powers of two
+during rotations and reductions, uses shorter stack operations for nearby
+operands, and simplifies the Boolean functions in the last 48 rounds.
+The complete-input cases cover ForkID and Chronicle OTDA, including mixed
+inputs, fully SM2 two-input/two-output payments, malformed preimages signed
+by the correct SM2 test key, and spends across the Chronicle activation
+boundary. The activation cases use transaction version 1 on both sides to
+isolate the effect of the activation flags.
 
-[BSV Node source](https://github.com/bitcoin-sv/bitcoin-sv/tree/6504a3aff65ba97c0f6c80962b033e35ecbfed4b) · [chain-gang source](https://github.com/linzhm/chain-gang/tree/5cb8c6e410dbfad1c619cec3ca54d1bcaacd4eb7) · [Chronicle release](https://docs.bsvblockchain.org/network-topology/nodes/sv-node/chronicle-release)
-
-The [standard vector](../template/sm2-standard.json), [payment vector](../template/spend-all.json), and [layout manifest](../template/layout.json) are checked in. Raw lock bytes are generated on demand and checked against the pinned manifest hash.
-
-### Internal v3 candidate
-
-v3 emits 161,888 bytes. It shares repeated terms within SM3 compression and message expansion, keeps consecutive bit operations in five-byte form, and precomputes the message schedule for a block containing only padding. The script executes all compression rounds and uses the v2 sighash and transaction-binding paths. The generator selects the original v1 and v2 bytecode for those versions.
-
-Select `--version 3` in the generator, or pass `version=3` to the Python locking script constructors. The wallet identifies v1, v2 and v3 by matching the canonical bytes around the owner slot. The v3 fixture includes an independent engine comparison for each of its 16 preimages, a complete ForkID payment vector, and the same complete-input and activation suites used for v2. The Go SignedData interoperability tests spend both v2 and v3 outputs.
-
-[v3 manifest](../template/layout-v3.json) · [v3 payment vector](../template/spend-all-v3.json) · [v3 mode vectors](../template/sighash-modes-v3.json)
-
-### Internal v4 candidate baseline
-
-v4 emits 144,925 bytes. It caches seven powers of two for SM3 rotations and reductions, uses shorter stack instructions for nearby operands, and simplifies the Boolean functions in the last 48 rounds. It uses the existing curve arithmetic and transaction binding. The v1–v3 manifests pin their existing scripts.
-
-Select `--version 4` in the generator or `version=4` in the Python locking script constructors. The v4 vectors pin the complete ForkID payment and the 16 sighash preimages. Regression runs cover ForkID and Chronicle OTDA, activation boundaries, negative spends, and attached and detached SignedData payments from the independent Go signer.
-
-[v4 manifest](../template/layout-v4.json) · [v4 payment vector](../template/spend-all-v4.json) · [v4 mode vectors](../template/sighash-modes-v4.json)
+[Standard vector](../template/sm2-standard.json) · [BSV Node source](https://github.com/bitcoin-sv/bitcoin-sv/tree/6504a3aff65ba97c0f6c80962b033e35ecbfed4b) · [chain-gang source](https://github.com/linzhm/chain-gang/tree/5cb8c6e410dbfad1c619cec3ca54d1bcaacd4eb7)
 
 ## SignedData payment interop
 
@@ -71,7 +66,7 @@ and 3 of GB/T 35275-2026 specify `SignedData.version = 1`,
 `SignerInfo.version = 2`, the issuer-and-serial identifier, and the SM2-1
 signature algorithm. Both verification entry points enforce these rules.
 The payment adapter accepts both the SM3 OID and the unkeyed SM3 OID used
-by Appendix A.1. The independent Go signer uses unkeyed SM3.
+by Appendix A.1. Both signer CLIs use unkeyed SM3.
 For these digest identifiers and the signature identifier, the adapter
 accepts omitted parameters or an empty DER NULL. Appendix A.1 uses NULL
 for the unkeyed SM3 and SM2-1 identifiers.
@@ -91,12 +86,14 @@ With `signedAttrs`, the signer signs the DER attributes. Such a signature
 requires a verifier for that signed payload. The payment adapter rejects it
 because the current template verifies the transaction message directly.
 
-The independent [Go signer](interop/go-signer/README.md) uses
-`github.com/emmansun/gmsm@v0.45.4` for SM2/SM3 and Go's ASN.1 encoder to emit
-complete DER envelopes from a separate process. Attached ForkID and detached
-Chronicle OTDA payments pass through BSV Node and chain-gang. The suite also
-checks an independent OpenSSL SM2 signature, rejects invalid envelopes and
-verifies byte-for-byte witness equivalence with the raw-signature path.
+The [Rust signer](interop/rust-signer/README.md) uses RustCrypto `sm2` and
+`der`. The [Python signer](interop/python-signer/README.md) uses OpenSSL
+for the signature and `asn1crypto` for the envelope. Both provide the same
+CLI and JSON fields. `verify.sh` builds the Rust signer with Cargo and
+replays attached ForkID and detached Chronicle OTDA payments from both
+signers through BSV Node and chain-gang. The suite also verifies emitted
+signatures in OpenSSL, rejects invalid envelopes and checks byte-for-byte
+witness equivalence with the raw-signature path.
 
 The [SignedData acceptance fixture](signed-data-acceptance.md) exhausts its
 270-row payment matrix and 128-row optional metadata matrix. It records the

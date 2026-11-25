@@ -31,7 +31,7 @@ These are script byte counts for the reference templates using ordinary ForkID `
 | Template | Locking script | Unlocking script |
 |---|---:|---:|
 | [P2PKH-R1](projects/p2pkh-r1/template/layout.json) | 59,582 B | 326 B |
-| [P2PKH-SM2 v2](projects/p2pkh-sm2/template/layout.json) | 199,777 B | 291 B |
+| [P2PKH-SM2 v1.0.0](projects/p2pkh-sm2/template/layout.json) | 144,925 B | 291 B |
 | [Lamport OTS](projects/lamport-ots/template/measurement.json) | 22,780 B | 8,357 B |
 
 The Lamport locking script includes the public key. An ordinary OTDA unlocking script varies with the transaction data being signed.
@@ -51,9 +51,9 @@ The three reference payment templates support the twelve BIP143 ForkID and Chron
 | `SINGLE` · output at the input index, if present | `0x43` | `0xc3` | `0x63` | `0xe3` |
 
 <details>
-<summary><strong>P2PKH-SM2 v2 and unpaired SINGLE</strong></summary>
+<summary><strong>P2PKH-SM2 v1.0.0 and unpaired SINGLE</strong></summary>
 
-A transaction may carry ForkID and OTDA signatures on different inputs. If an OTDA `SINGLE` input has no corresponding output, v2 checks a companion preimage that binds the SM2 authorization to the current input. Existing v1 outputs remain spendable with `0x41`.
+A transaction may carry ForkID and OTDA signatures on different inputs. If an OTDA `SINGLE` input has no corresponding output, the script checks a companion preimage that binds the SM2 authorization to the current input.
 
 [SM2 transaction-binding rules](projects/p2pkh-sm2/docs/spec.en.md#transaction-scope-and-bytes) · [16 signing vectors](projects/p2pkh-sm2/template/sighash-modes.json)
 

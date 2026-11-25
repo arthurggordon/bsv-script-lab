@@ -1,4 +1,4 @@
-# P2PKH-SM2 v2
+# P2PKH-SM2 v1.0.0
 
 Experimental specification · BRC number unassigned · [中文](spec.zh-CN.md)
 
@@ -47,20 +47,19 @@ OTDA serializes the selected inputs and outputs in the original format and appen
 
 | Item | Encoding |
 |---|---|
-| v2 lock / owner slot | 199,777 bytes / zero-based `[168,188)` |
+| Canonical lock / owner slot | 144,925 bytes / zero-based `[168,188)` |
 | Three witness items | preimage P, uncompressed key Q (65 bytes), raw r‖s (64 bytes) |
 | BIP143 scriptSig | 291 bytes |
 | Ordinary OTDA scriptSig | `len(push(P)) + 131` bytes, transaction-dependent |
 | Unpaired OTDA SINGLE scriptSig | 294 bytes (161-byte companion P) |
-| Existing v1 output | 199,530-byte lock, owner at `[50,70)`, spendable with `41` |
 
 Recognition checks all fixed program bytes. [The layout](../template/layout.json) pins the length, owner offset, zero-owner program hash and fixed-byte fingerprint. Generate raw bytes with [generate_lock.py](../reference/generate_lock.py). Expanded hex is deliberately reproducible rather than duplicated in source control.
 
 ## Integration
 
-[The Python API](../reference/p2pkh_sm2.py) exports output generation from a hash or validated public key, full-template recognition (`identify` returns version and owner), `current_input_unlock`, `sign_input`, and `sign_payment`. The payment helper validates the funding output, key, outputs and explicit fee, calls `signer(H, IDA)`, verifies its returned raw signature and serializes the spend.
+[The Python API](../reference/p2pkh_sm2.py) exports output generation from a hash or validated public key, full-template recognition (`identify` returns template version `1` and owner), `current_input_unlock`, `sign_input`, and `sign_payment`. The payment helper validates the funding output, key, outputs and explicit fee, calls `signer(H, IDA)`, verifies its returned raw signature and serializes the spend.
 
-`sign_payment` uses `0x41`. For a prepared transaction, call `sign_input(tx, index, funding_raw, key, signer, sighash_type, chronicle_active=active)`. The wallet matches the funding outpoint and signs only that input. `chronicle_active` defaults to `True`; callers handling pre-activation spends must supply `False`. The wallet rejects OTDA before invoking the signer in that context, and restricts v1 to `0x41` in all contexts. [Mode vectors](../template/sighash-modes.json) cover all twelve paired modes and four unpaired SINGLE cases.
+`sign_payment` uses `0x41`. For a prepared transaction, call `sign_input(tx, index, funding_raw, key, signer, sighash_type, chronicle_active=active)`. The wallet matches the funding outpoint and signs only that input. `chronicle_active` defaults to `True`; callers handling pre-activation spends must supply `False`. The wallet rejects OTDA before invoking the signer in that context. [Mode vectors](../template/sighash-modes.json) cover all twelve paired modes and four unpaired SINGLE cases.
 
 The caller authenticates the funding transaction and confirmation state and obtains approval of recipients, change and fees. Secret-key signing belongs in an external signer. The pure-Python arithmetic and explicit-nonce fixture signer are not constant-time production signing implementations. The identity string is an algorithm input; it is not identity certification or X.509 validation.
 

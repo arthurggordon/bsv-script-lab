@@ -1,4 +1,4 @@
-# P2PKH-SM2 v2 规范
+# P2PKH-SM2 v1.0.0 规范
 
 实验版本 · BRC 编号未分配 · [English](spec.en.md)
 
@@ -26,7 +26,7 @@ e  = SM3(ZA || H)
 
 ## 当前输入交易绑定
 
-每个输入可独立选择摘要算法、输出覆盖范围和 ANYONECANPAY（ACP）。下表是签名末尾的十六进制类型字节。预映像结尾按四字节小端序编码该类型，BSV 的高 24 位 fork 值为零。Chronicle 在花费时启用 `0x20`，激活前创建的 v2 输出也可以在激活后使用 OTDA。
+每个输入可独立选择摘要算法、输出覆盖范围和 ANYONECANPAY（ACP）。下表是签名末尾的十六进制类型字节。预映像结尾按四字节小端序编码该类型，BSV 的高 24 位 fork 值为零。Chronicle 在花费时启用 `0x20`，激活前创建的本模板输出也可以在激活后使用 OTDA。
 
 | 输出覆盖范围 | 常规 ForkID（BIP143） | 加 ACP | Chronicle OTDA | OTDA 加 ACP |
 |---|---|---|---|---|
@@ -66,7 +66,7 @@ SM2 不采用 ECDSA 的 low-S 归一化。不能将 s 随意替换为 n−s。
 
 | 字段 | 字节数 / 位置 |
 |---|---|
-| 锁定脚本 | 199,777 字节（v2） |
+| 锁定脚本 | 144,925 字节 |
 | 收款公钥哈希 | 零起点 `[168,188)`，20 字节 |
 | P | 常规 BIP143 为 158 字节，普通 OTDA 随交易变化，无配对 OTDA SINGLE 为 161 字节 |
 | Q | 65 字节；序列化 push 共 66 字节 |
@@ -82,7 +82,7 @@ SM2 不采用 ECDSA 的 low-S 归一化。不能将 s 随意替换为 n−s。
 - `locking_script_from_owner_hash(owner)`：付款方只持有收款哈希即可生成脚本。
 - `locking_script_from_public_key(key)`：校验完整 SM2 公钥并生成脚本。
 - `recognize(raw)`：检查完整固定程序，返回所有者哈希或 None。
-- `identify(raw)` 检查整个模板，返回版本和所有者哈希。v1 历史输出继续使用 `0x41` 花费。
+- `identify(raw)` 检查整个模板，返回模板版本 `1` 和所有者哈希。
 - `sign_input(tx, index, funding_raw, key, signer, sighash_type, chronicle_active=active)` 核对 outpoint，按指定模式签署当前输入，保留其他输入已有的解锁脚本。调用者应提供花费时的激活状态。参数默认 `True`，传 `False` 时钱包会在调用签名器之前拒绝 OTDA。
 - `current_input_unlock(tx, index, previous_amount, key, signature)`：验证当前输入 SM2 授权并编码见证。
 - `sign_payment(funding_raw, vout, outputs, fee, key, signer)`：固定使用 `0x41`，核对父输出、密钥、金额及费用，调用 `signer(H, IDA)`，验证返回签名后组装交易。

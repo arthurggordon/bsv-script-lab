@@ -1,18 +1,17 @@
 """Verify SignedData payment interop without changing the locking template."""
 
 import json
-from itertools import product
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
-from assemble import TEMPLATE_VERSIONS
 from p2pkh_sm2 import locking_script_from_public_key, sign_input
 from signed_data import signed_data_signer, verify_signed_data
-from sm2 import USER_ID, encode_public, fixture_sign, mul, sm3
-from test_sm2 import der, der_signature, fixture
+from sm2 import N, USER_ID, encode_public, fixture_sign, mul, sm3
+from test_sm2 import der, der_signature, fixture, public_pem
 from test_sighash import chain_check
 from shared.transaction import Input, Output, Transaction
 
@@ -26,6 +25,12 @@ SM2 = der(0x30, bytes.fromhex('06092a811ccf5501822d010500'))
 SM2_WITH_SM3 = der(0x30, bytes.fromhex('06082a811ccf550183750500'))
 DATA_OID = bytes.fromhex('060a2a811ccf550601040201')
 SIGNED_DATA_OID = bytes.fromhex('060a2a811ccf550601040202')
+TEST_KEY = '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'
+FIXTURE_IDENTIFIER = bytes.fromhex(
+    '303e303931173015060355040a130e42535620536372697074204c6162'
+    '311e301c06035504031315496e646570656e64656e7420476f205369676e6572020101'
+)
+PYTHON_SIGNER = Path(__file__).resolve().parent / 'interop' / 'python-signer' / 'sm2_signed_data_signer.py'
 
 
 def signed_data(signature, *, attached=None, sid=ISSUER_AND_SERIAL, version=2,
@@ -83,49 +88,6 @@ class SignedDataTests(unittest.TestCase):
             adapted = sign_input(tx, 0, parent.serialize(), key, adapter)
             chain_check(adapted, (parent,), 0)
 
-    @unittest.skipUnless(os.environ.get('SM2_SIGNED_DATA_SIGNER'),
-                         'set SM2_SIGNED_DATA_SIGNER to the independent signer executable')
-    def test_independent_gmsm_signed_data_provider(self):
-        executable = os.environ['SM2_SIGNED_DATA_SIGNER']
-        test_key = '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f'
-
-        def request(message, detached=False):
-            arguments = [executable, '-message', message.hex(), '-key', test_key]
-            if detached:
-                arguments.append('-detached')
-            return json.loads(subprocess.check_output(arguments))
-
-        identity = request(bytes(32))
-        key = bytes.fromhex(identity['public_key_hex'])
-        signer_identifier = bytes.fromhex(identity['signer_identifier_hex'])
-        self.assertEqual(identity['signer_version'], 2)
-
-        for version, (flag, detached) in product(TEMPLATE_VERSIONS[1:], ((0x41, False), (0x61, True))):
-            with self.subTest(template_version=version, flag=hex(flag), detached=detached):
-                parent = Transaction((Input(b'\xa7' * 32, 0),),
-                                     (Output(1000, locking_script_from_public_key(key, version=version)),))
-                tx = Transaction((Input(parent.txid_wire(), 0),), (Output(900, b'\x51'),))
-
-                def provider(message, user_id):
-                    self.assertEqual(user_id, USER_ID)
-                    response = request(message, detached)
-                    self.assertEqual(bytes.fromhex(response['public_key_hex']), key)
-                    self.assertEqual(bytes.fromhex(response['signer_identifier_hex']), signer_identifier)
-                    self.assertEqual(response['signer_version'], 2)
-                    envelope = bytes.fromhex(response['envelope_hex'])
-                    self.assertEqual(verify_signed_data(
-                        envelope, {signer_identifier: (key, user_id)},
-                        detached_content=message if detached else None,
-                    ), message)
-                    return envelope
-
-                adapter = signed_data_signer(provider, key, signer_identifier=signer_identifier)
-                adapted = sign_input(tx, 0, parent.serialize(), key, adapter, flag)
-                chain_check(adapted, (parent,), 0)
-                if os.environ.get('REGTEST_COOKIE'):
-                    from test_node import check_node
-                    check_node(adapted, (parent,), 0)
-
     def test_rejects_wrong_authorization_or_container(self):
         message = bytes(range(32))
         key = encode_public(mul(1))
@@ -159,6 +121,120 @@ class SignedDataTests(unittest.TestCase):
                            der(0x30, ISSUER + der(0x02, b'\x00\x01'))):
             with self.subTest(identifier=identifier), self.assertRaises(ValueError):
                 signed_data_signer(lambda *_: None, key, signer_identifier=identifier)
+
+
+class SignedDataSignerChecks:
+    def request(self, message, detached=False):
+        arguments = [*self.command, '-message', message.hex(), '-key', TEST_KEY]
+        if detached:
+            arguments.append('-detached')
+        return self.read_envelope(arguments)
+
+    def read_envelope(self, arguments):
+        response = json.loads(subprocess.check_output(arguments))
+        self.assertEqual(set(response), {
+            'envelope_hex', 'public_key_hex', 'signer_identifier_hex', 'signer_version',
+        })
+        self.assertEqual(bytes.fromhex(response['public_key_hex']), encode_public(mul(int(TEST_KEY, 16))))
+        self.assertEqual(bytes.fromhex(response['signer_identifier_hex']), FIXTURE_IDENTIFIER)
+        self.assertEqual(response['signer_version'], 2)
+        return bytes.fromhex(response['envelope_hex'])
+
+    def test_independent_signed_data_provider(self):
+        key = encode_public(mul(int(TEST_KEY, 16)))
+        for flag, detached in ((0x41, False), (0x61, True)):
+            with self.subTest(flag=hex(flag), detached=detached):
+                parent = Transaction((Input(b'\xa7' * 32, 0),),
+                                     (Output(1000, locking_script_from_public_key(key)),))
+                tx = Transaction((Input(parent.txid_wire(), 0),), (Output(900, b'\x51'),))
+
+                def provider(message, user_id):
+                    self.assertEqual(user_id, USER_ID)
+                    envelope = self.request(message, detached)
+                    trusted = {FIXTURE_IDENTIFIER: (key, user_id)}
+                    if detached:
+                        with self.assertRaisesRegex(ValueError, 'detached content'):
+                            verify_signed_data(envelope, trusted)
+                    self.assertEqual(verify_signed_data(
+                        envelope, trusted, detached_content=message if detached else None,
+                    ), message)
+                    return envelope
+
+                adapter = signed_data_signer(provider, key, signer_identifier=FIXTURE_IDENTIFIER)
+                adapted = sign_input(tx, 0, parent.serialize(), key, adapter, flag)
+                chain_check(adapted, (parent,), 0)
+                if os.environ.get('REGTEST_COOKIE'):
+                    from test_node import check_node
+                    check_node(adapted, (parent,), 0)
+
+    def test_openssl_verifies_independent_signer_output(self):
+        key = encode_public(mul(int(TEST_KEY, 16)))
+        message = bytes(range(32))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'public.pem').write_bytes(public_pem(key))
+            (path / 'message').write_bytes(message)
+            for detached in (False, True):
+                with self.subTest(detached=detached):
+                    adapter = signed_data_signer(
+                        lambda payload, _: self.request(payload, detached),
+                        key, signer_identifier=FIXTURE_IDENTIFIER,
+                    )
+                    (path / 'signature').write_bytes(der_signature(adapter(message, USER_ID)))
+                    subprocess.run([
+                        'openssl', 'pkeyutl', '-verify', '-pubin', '-inkey', 'public.pem',
+                        '-rawin', '-digest', 'sm3', '-pkeyopt', 'distid:' + USER_ID.decode('ascii'),
+                        '-in', 'message', '-sigfile', 'signature',
+                    ], cwd=directory, check=True, capture_output=True)
+
+    def test_independent_signer_rejects_invalid_arguments(self):
+        cases = {
+            'missing key': ('-message', '01'),
+            'missing message': ('-key', TEST_KEY),
+            'empty message': ('-message', '', '-key', TEST_KEY),
+            'non-hex message': ('-message', 'gg', '-key', TEST_KEY),
+            'whitespace in message hex': ('-message', '00 ff', '-key', TEST_KEY),
+            'non-hex key': ('-message', '01', '-key', 'gg' * 32),
+            'short key': ('-message', '01', '-key', '01'),
+            'long key': ('-message', '01', '-key', TEST_KEY + '01'),
+            'zero scalar': ('-message', '01', '-key', '00' * 32),
+            'scalar n minus one': ('-message', '01', '-key', f'{N - 1:064x}'),
+            'scalar n': ('-message', '01', '-key', f'{N:064x}'),
+            'invalid detached flag': ('-message', '01', '-key', TEST_KEY, '-detached=maybe'),
+        }
+        for case, arguments in cases.items():
+            with self.subTest(case=case):
+                result = subprocess.run([*self.command, *arguments], capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, b'')
+                self.assertTrue(result.stderr)
+
+    def test_long_content_and_cli_aliases(self):
+        message = bytes(range(128))
+        trusted = {FIXTURE_IDENTIFIER: (encode_public(mul(int(TEST_KEY, 16))), USER_ID)}
+        for detached in (False, True):
+            with self.subTest(detached=detached):
+                envelope = self.read_envelope([
+                    *self.command, f'--message={message.hex()}', f'--key={TEST_KEY}',
+                    f'--detached={str(detached).lower()}',
+                ])
+                expected_content = message if detached else None
+                if detached:
+                    with self.assertRaisesRegex(ValueError, 'detached content'):
+                        verify_signed_data(envelope, trusted)
+                self.assertEqual(verify_signed_data(
+                    envelope, trusted, detached_content=expected_content,
+                ), message)
+
+
+class PythonSignedDataSignerTests(SignedDataSignerChecks, unittest.TestCase):
+    command = (sys.executable, str(PYTHON_SIGNER))
+
+
+@unittest.skipUnless(os.environ.get('SM2_SIGNED_DATA_SIGNER'),
+                     'set SM2_SIGNED_DATA_SIGNER to the Rust signer executable')
+class IndependentSignedDataTests(SignedDataSignerChecks, unittest.TestCase):
+    command = (os.environ.get('SM2_SIGNED_DATA_SIGNER'),)
 
 
 if __name__ == '__main__':

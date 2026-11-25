@@ -55,11 +55,13 @@ From the repository root:
 PYTHONPATH=.:projects/p2pkh-sm2/reference python -m unittest -v test_signed_data_acceptance
 ```
 
-For BSV Node 1.2.3 replay, build the [independent Go signer](interop/go-signer/README.md).
-Set `SM2_SIGNED_DATA_SIGNER` to its absolute executable path and run
-`bash projects/p2pkh-sm2/reference/verify.sh`. The run must show the independent
-signer test as passed to count as end-to-end evidence. It replays attached
-ForkID and detached Chronicle OTDA spends through BSV Node and chain-gang.
+For BSV Node 1.2.3 replay, run `bash projects/p2pkh-sm2/reference/verify.sh`.
+It builds the [independent Rust signer](interop/rust-signer/README.md) with
+Cargo and also invokes the [Python signer](interop/python-signer/README.md).
+Set `SM2_SIGNED_DATA_SIGNER` to the absolute executable path of a prebuilt
+Rust signer to skip the Cargo build. The tests exercise both CLIs, verify
+the signatures in OpenSSL and replay attached ForkID and detached Chronicle
+OTDA spends through BSV Node and chain-gang.
 
 ## Complete enumeration of the declared domain
 

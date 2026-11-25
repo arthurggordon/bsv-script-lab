@@ -3,7 +3,7 @@ from functools import cache
 from hashlib import sha256
 import json
 from pathlib import Path
-from assemble import TEMPLATE_VERSIONS, assemble
+from assemble import TEMPLATE_VERSION, assemble
 from sighash import authorization
 from sm2 import USER_ID,hash256,public_key_hash160,verify
 from shared.script import push
@@ -13,13 +13,11 @@ MANIFEST=Path(__file__).resolve().parents[1]/'template/layout.json'
 
 
 @cache
-def _canonical(version=2):
-    if version not in TEMPLATE_VERSIONS:
-        raise ValueError('unknown P2PKH-SM2 version')
-    manifest = MANIFEST if version == 2 else MANIFEST.with_name(f'layout-v{version}.json')
-    layout=json.loads(manifest.read_text())
-    raw=assemble(bytes(20), version)
-    if len(raw)!=layout['script_bytes'] or sha256(raw).hexdigest()!=layout['base_script_sha256']:
+def _canonical():
+    layout=json.loads(MANIFEST.read_text())
+    raw=assemble(bytes(20))
+    if (layout['version']!=TEMPLATE_VERSION or len(raw)!=layout['script_bytes']
+            or sha256(raw).hexdigest()!=layout['base_script_sha256']):
         raise ValueError('canonical SM2 template differs from manifest')
     start=layout['owner_hash160']['offset']
     if raw[start:start+20]!=bytes(20) or sha256(raw[:start]+raw[start+20:]).hexdigest()!=layout['fixed_bytes_sha256']:
@@ -27,13 +25,14 @@ def _canonical(version=2):
     return raw,start
 
 
-def locking_script_from_owner_hash(owner, *, version=2):
+def locking_script_from_owner_hash(owner, *, version=TEMPLATE_VERSION):
     if not isinstance(owner,bytes) or len(owner)!=20: raise ValueError('expected a 20-byte owner hash')
-    raw,start=_canonical(version)
+    if version != TEMPLATE_VERSION: raise ValueError('unsupported P2PKH-SM2 template version')
+    raw,start=_canonical()
     return raw[:start]+owner+raw[start+20:]
 
 
-def locking_script_from_public_key(key, *, version=2):
+def locking_script_from_public_key(key, *, version=TEMPLATE_VERSION):
     return locking_script_from_owner_hash(public_key_hash160(key), version=version)
 
 
@@ -41,11 +40,10 @@ def identify(raw):
     """Return (version, owner) after verifying the complete locking program."""
     if not isinstance(raw, bytes):
         return None
-    for version in reversed(TEMPLATE_VERSIONS):
-        template, start = _canonical(version)
-        if (len(raw) == len(template) and raw[:start] == template[:start]
-                and raw[start+20:] == template[start+20:]):
-            return version, raw[start:start+20]
+    template, start = _canonical()
+    if (len(raw) == len(template) and raw[:start] == template[:start]
+            and raw[start+20:] == template[start+20:]):
+        return TEMPLATE_VERSION, raw[start:start+20]
     return None
 
 
@@ -55,10 +53,10 @@ def recognize(raw):
 
 
 def current_input_unlock(tx, index, previous_amount, key, signature, sighash_type=0x41,
-                         *, chronicle_active=True, version=2):
+                         *, chronicle_active=True, version=TEMPLATE_VERSION):
     public_key_hash160(key)
-    if version not in TEMPLATE_VERSIONS or (version == 1 and sighash_type != 0x41):
-        raise ValueError('sighash type unavailable for this template version')
+    if version != TEMPLATE_VERSION:
+        raise ValueError('unsupported P2PKH-SM2 template version')
     auth = authorization(tx, index, previous_amount, sighash_type, chronicle_active=chronicle_active)
     return _encode_unlock(auth, key, signature)
 
@@ -78,8 +76,6 @@ def _sign_previous(tx, index, previous, key, signer, sighash_type, chronicle_act
     template = identify(previous.script)
     if template is None or template[1] != public_key_hash160(key):
         raise ValueError('funding output does not belong to key/template')
-    if template[0] == 1 and sighash_type != 0x41:
-        raise ValueError('v1 outputs require ForkID ALL')
     auth = authorization(tx, index, previous.value, sighash_type, chronicle_active=chronicle_active)
     return tx.with_script(index, _encode_unlock(auth, key, signer(auth.message, USER_ID)))
 

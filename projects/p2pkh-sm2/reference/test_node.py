@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import unittest
 import requests
-from assemble import TEMPLATE_VERSIONS
 from test_sm2 import fixture
 from test_sighash import chain_check, mode_cases, activation_cases
 from p2pkh_sm2 import *
@@ -38,27 +37,21 @@ def check(tx, parents, index, valid=True):
 
 class NodeTests(unittest.TestCase):
     def test_sighash_coverage(self):
-        for version in TEMPLATE_VERSIONS[1:]:
-            with self.subTest(template_version=version):
-                mode_cases(check_node,template_version=version)
+        mode_cases(check_node)
 
     def test_chronicle_flags(self):
-        for version in TEMPLATE_VERSIONS[1:]:
-            with self.subTest(template_version=version):
-                activation_cases(check_node,template_version=version)
+        activation_cases(check_node)
 
     def test_consecutive_payments(self):
         qa=encode_public(mul(1)); qb=encode_public(mul(7))
         start=locking_script_from_public_key(qa)
-        for versions in ((2,2,2),(3,3,2),(4,4,3)):
-            with self.subTest(destination_versions=versions):
-                parent=Transaction((Input(b'\x22'*32,0),),(Output(10000,start),))
-                for hop,(d,q,destination,version) in enumerate(zip((1,7,1),(qa,qb,qa),(qb,qa,qb),versions)):
-                    dest=locking_script_from_public_key(destination,version=version)
-                    signed=sign_payment(parent.serialize(),0,[Output(parent.outputs[0].value-100,dest)],100,q,lambda m,uid: fixture_sign(d,m,hop+2,uid))
-                    check(signed,[parent],0)
-                    self.assertEqual(len(signed.inputs[0].script),291)
-                    parent=signed
+        parent=Transaction((Input(b'\x22'*32,0),),(Output(10000,start),))
+        for hop,(d,q,destination) in enumerate(zip((1,7,1),(qa,qb,qa),(qb,qa,qb))):
+            dest=locking_script_from_public_key(destination)
+            signed=sign_payment(parent.serialize(),0,[Output(parent.outputs[0].value-100,dest)],100,q,lambda m,uid: fixture_sign(d,m,hop+2,uid))
+            check(signed,[parent],0)
+            self.assertEqual(len(signed.inputs[0].script),291)
+            parent=signed
 
     def test_multi_input_and_multiple_outputs(self):
         key,lock,parent,_,_,_=fixture()
@@ -70,13 +63,24 @@ class NodeTests(unittest.TestCase):
         check(replace(signed,outputs=tuple(reversed(signed.outputs))),[other,parent],1,False)
         check(replace(signed,inputs=(replace(signed.inputs[0],txid=b'\x77'*32),signed.inputs[1])),[other,parent],1,False)
 
-    def test_rejects_mutations(self):
-        for version in TEMPLATE_VERSIONS[1:]:
-            with self.subTest(template_version=version):
-                self.check_rejects_mutations(version)
+    def test_two_sm2_inputs_and_two_sm2_outputs(self):
+        keys = (encode_public(mul(1)), encode_public(mul(7)))
+        locks = tuple(locking_script_from_public_key(key) for key in keys)
+        parents = tuple(Transaction((Input(bytes([index + 1]) * 32, 0),), (Output(1000, lock),))
+                        for index, lock in enumerate(locks))
+        tx = Transaction(tuple(Input(parent.txid_wire(), 0) for parent in parents),
+                         tuple(Output(900, lock) for lock in reversed(locks)))
+        for flag in (0x41, 0x61):
+            with self.subTest(flag=hex(flag)):
+                first = sign_input(tx, 0, parents[0].serialize(), keys[0],
+                                   lambda message, user_id: fixture_sign(1, message, 2, user_id), flag)
+                signed = sign_input(first, 1, parents[1].serialize(), keys[1],
+                                    lambda message, user_id: fixture_sign(7, message, 3, user_id), flag)
+                for index in (0, 1):
+                    check(signed, parents, index)
 
-    def check_rejects_mutations(self, version):
-        key,lock,parent,tx,pre,sig=fixture(template_version=version)
+    def test_rejects_mutations(self):
+        key,lock,parent,tx,pre,sig=fixture()
         signed=tx.with_script(0,push(pre)+push(key)+push(sig))
         check(signed,[parent],0)
         check(replace(signed,outputs=(Output(899,b'\x51'),)),[parent],0,False)
@@ -91,7 +95,7 @@ class NodeTests(unittest.TestCase):
         check(tx.with_script(0,push(pre)+push(encode_public(mul(2)))+push(sig)),[parent],0,False)
         for malformed in (b'\x04'+bytes(64),b'\x04'+be32(P)+key[33:],b'\x03'+key[1:]):
             owner=new('ripemd160',sha256(malformed).digest()).digest()
-            bad_parent=replace(parent,outputs=(Output(1000,locking_script_from_owner_hash(owner,version=version)),))
+            bad_parent=replace(parent,outputs=(Output(1000,locking_script_from_owner_hash(owner)),))
             bad_tx=replace(tx,inputs=(Input(bad_parent.txid_wire(),0),))
             bad_pre=preimage_all(bad_tx,0,1000)
             check(bad_tx.with_script(0,push(bad_pre)+push(malformed)+push(fixture_sign(1,hash256(bad_pre),3))),[bad_parent],0,False)

@@ -7,18 +7,16 @@ from sm2 import A,B,G,USER_ID,be32
 from sm3_script import IV,compress,hash_script
 
 
-TEMPLATE_VERSIONS = (1, 2, 3, 4)
+TEMPLATE_VERSION = 1
 
 
-def assemble(owner, version=2):
-    if version not in TEMPLATE_VERSIONS:
-        raise ValueError("unknown P2PKH-SM2 version")
-    optimized = version == 3
-    compact = version == 4
+def assemble(owner, version=TEMPLATE_VERSION):
+    if version != TEMPLATE_VERSION:
+        raise ValueError("unsupported P2PKH-SM2 template version")
     prefix=(8*len(USER_ID)).to_bytes(2,'big')+USER_ID+be32(A)+be32(B)+be32(G[0])+be32(G[1])
     state=compress(compress(IV,prefix[:64]),prefix[64:128])
     return assemble_blocks(Path(__file__).with_name('asm'),owner,{
         'ZA_TAIL':push(prefix[128:]),
-        'SM3_ZA':hash_script(82,state,128,optimized=optimized,compact=compact),
-        'SM3_MESSAGE':hash_script(64,optimized=optimized,compact=compact),
-    }, entry='LOCK_V1' if version == 1 else 'LOCK')
+        'SM3_ZA':hash_script(82,state,128,compact=True),
+        'SM3_MESSAGE':hash_script(64,compact=True),
+    })

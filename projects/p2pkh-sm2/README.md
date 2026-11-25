@@ -1,28 +1,30 @@
-# P2PKH-SM2
+# P2PKH-SM2 v1.0.0
 
-[BSV Script Lab](../../README.md) · Second public script project / 第二个公开脚本项目
+[BSV Script Lab](../../README.md)
 
 A BSV payment template for the hash of an uncompressed curveSM2 public key. The owner authorizes the current input using a standard SM2/SM3 message signature. Bitcoin Script computes ZA and SM3, verifies the SM2 equation, and binds the approved message to the actual spending transaction through PUSHTX and native `OP_CHECKSIG`.
 
 付款人凭收款人的 SM2 公钥哈希创建输出。收款人对当前交易签名一次，脚本验证 SM2 签名、ZA 用户标识绑定和实际交易绑定。解锁数据不携带父交易或历史签名，常规 ForkID 连续转付时，每个输入的解锁脚本保持 291 字节。
 
-| Property | v2 |
+| Property | v1.0.0 |
 |---|---|
-| Curve and signature | curveSM2 / SM2, not ECDSA |
+| Curve and signature | curveSM2 / SM2 |
 | Message hash | SM3 with ZA |
 | Owner | HASH160 of `04 || X_BE32 || Y_BE32` |
 | SM2 user ID | ASCII `1234567812345678`, fixed by this template |
 | Coverage | ALL, NONE, SINGLE, each with optional ANYONECANPAY, using BIP143 or Chronicle OTDA |
-| Lock / ordinary unlock | 199,777 / 291 bytes (BIP143); ordinary OTDA varies with the covered transaction data |
+| Lock / ordinary unlock | 144,925 / 291 bytes (BIP143); ordinary OTDA varies with the covered transaction data |
 | Witness | preimage, public key, raw `r || s` |
 | Current API | Python reference; external device/message-sign callback |
 
-`sign_payment` uses `0x41`. Use `sign_input` to select coverage per input, including a mix of both algorithms in one transaction. Provide the target network’s Chronicle activation state when signing OTDA. An unpaired OTDA SINGLE uses a 294-byte witness and binds the owner’s authorization to the current outpoint. The wallet recognizes existing v1 outputs and spends them with `0x41`.
+`sign_payment` uses `0x41`. Use `sign_input` to select coverage per input, including a mix of both algorithms in one transaction. Provide the target network’s Chronicle activation state when signing OTDA. An unpaired OTDA SINGLE uses a 294-byte witness and binds the owner’s authorization to the current outpoint.
 
 [中文规范](docs/spec.zh-CN.md) · [English specification](docs/spec.en.md) · [Reference and tests](reference/README.md) · [Layout](template/layout.json) · [Standard vector](template/sm2-standard.json) · [Payment vector](template/spend-all.json) · [16 sighash vectors](template/sighash-modes.json)
 
-The Python wallet can also accept [GB/T 35275-2026 SignedData](reference/README.md#signeddata-payment-interop)
+The wallet accepts [GB/T 35275-2026 SignedData](reference/README.md#signeddata-payment-interop)
 from a configured signer using the direct, single-signer payment profile.
+Both [Python](reference/interop/python-signer/README.md) and
+[Rust](reference/interop/rust-signer/README.md) provide a test signer CLI.
 
 ```sh
 cd projects/p2pkh-sm2/reference
@@ -30,20 +32,10 @@ python3 generate_lock.py --owner-hash160 000102030405060708090a0b0c0d0e0f1011121
 python3 generate_lock.py --owner-hash160 000102030405060708090a0b0c0d0e0f10111213 --format raw > scriptPubKey.bin
 ```
 
-The canonical program is reproducibly generated from source; the manifest fixes its length, owner offset, base hash and fixed-byte fingerprint. Pass `--version 1` to reproduce the [original template](template/layout-v1.json).
+The generator emits the v1.0.0 baseline by default. Its JSON output and
+the Python wallet identify the template as version `1`. The canonical program
+is reproducibly generated from source. Its manifest pins the length, owner
+offset, base hash and fixed-byte fingerprint.
 
-## 内部候选模板 v3
-
-v1、v2 和 v3 是内部模板版本。v3 将锁定脚本减至 **161,888 字节**，较 v2 少 **37,889 字节（19.0%）**。它沿用 v2 的签名覆盖范围与解锁格式，常规 ForkID 解锁脚本仍为 291 字节。生成器和钱包构造 API 默认选择 v2，显式传入 `--version 3` 或 `version=3` 可生成 v3。钱包签署已有输出时按完整脚本识别版本。以下命令从仓库根目录运行。
-
-```sh
-python3 projects/p2pkh-sm2/reference/generate_lock.py --version 3 --owner-hash160 000102030405060708090a0b0c0d0e0f10111213 --format raw > scriptPubKey-v3.bin
-```
-
-[v3 指纹](template/layout-v3.json) · [v3 付款向量](template/spend-all-v3.json) · [v3 交易覆盖向量](template/sighash-modes-v3.json)
-
-## 内部候选基线 v4
-
-v4 在 v3 的 SM3 生成器上复用移位和取模常量，缩短浅层栈操作，并简化后 48 轮的 `FF` 和 `GG`。锁定脚本为 **144,925 字节**，比 v3 少 **16,963 字节（10.5%）**。曲线验签、交易绑定和常规 ForkID 的 291 字节解锁格式沿用 v3。生成器通过 `--version 4` 选择 v4，Python 构造 API 使用 `version=4`。v1 至 v4 均为内部模板版本。
-
-[v4 指纹](template/layout-v4.json) · [v4 付款向量](template/spend-all-v4.json) · [v4 交易覆盖向量](template/sighash-modes-v4.json)
+`v1.0.0` 是首个公开版本，模板编号为 `1`。试验阶段的模板见 Git 开发历史。
+链下封装使用国标规定的 `SignedData.version = 1` 和 `SignerInfo.version = 2`。
