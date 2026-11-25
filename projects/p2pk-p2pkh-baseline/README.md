@@ -1,5 +1,7 @@
 # Native P2PK and P2PKH baseline
 
+**Status** · v0.1 development baseline.
+
 Offline examples for conventional P2PKH and P2PK locking scripts. This is a
 test lab, not a wallet, production signer, covenant implementation, or node.
 
@@ -47,3 +49,9 @@ spend at input 0 and its synthetic prevout's exact script, amount and height
 the pinned offline engine on two accepts and three rejects. This checks
 script execution with an explicit prevout. Funded UTXO, mempool and block
 acceptance are separate milestones for issue #1.
+
+The [native acceptance matrix](reference/acceptance.md) exhaustively covers
+2,880 complete-input combinations in its declared domain, including all
+12 paired ForkID and Chronicle OTDA sighash combinations. It also checks
+80 unpaired SINGLE mutation cases and 192 cases around Chronicle activation.
+Explicit transaction commitments determine the expected result for each row.
