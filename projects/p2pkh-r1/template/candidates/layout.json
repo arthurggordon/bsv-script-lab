@@ -1,0 +1,49 @@
+{
+  "script_file": "compiled.hex",
+  "script_bytes": 47510,
+  "script_sha256": "39a14e18ae6298e38532aaef55c8b3077cb3e43a4cbfe52abecee3bf02fc804a",
+  "owner_hash160": {
+    "offset": 208,
+    "length": 20
+  },
+  "fixed_bytes_sha256": "2c514b452c30fe908bfb59a5b630ec4402c5f356717c1235ffa75c0c1df8e208",
+  "supported_sighash_types": [
+    "41",
+    "42",
+    "43",
+    "61",
+    "62",
+    "63",
+    "c1",
+    "c2",
+    "c3",
+    "e1",
+    "e2",
+    "e3"
+  ],
+  "ordinary_script_code_hex": "68ac",
+  "compressed_preimage": {
+    "spend_transaction_version": 2,
+    "sighash_types": [
+      "61",
+      "e1"
+    ],
+    "program_file": "otda-all-reconstruct.hex",
+    "program_bytes": 5825,
+    "program_sha256": "0f029119b1d5da18fc3b9a5237c000d3b0512729594a7b5e54bf165b736dacd9"
+  },
+  "owner_vectors": [
+    {
+      "owner_hash160": "0000000000000000000000000000000000000000",
+      "script_sha256": "39a14e18ae6298e38532aaef55c8b3077cb3e43a4cbfe52abecee3bf02fc804a"
+    },
+    {
+      "owner_hash160": "000102030405060708090a0b0c0d0e0f10111213",
+      "script_sha256": "59b29cc325afe1159f81bfb07ed60ff4ba43dd2f6a8e5e9e5d7fc981ebc1447a"
+    },
+    {
+      "owner_hash160": "ffffffffffffffffffffffffffffffffffffffff",
+      "script_sha256": "1fa9525b009ae58359b5bd07cdc7ac49e728290f6ca7d38ab68d3133c15dd650"
+    }
+  ]
+}

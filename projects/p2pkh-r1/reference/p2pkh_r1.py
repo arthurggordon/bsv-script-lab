@@ -6,6 +6,8 @@ import re
 
 from cryptography.hazmat.primitives.asymmetric import ec
 
+from fixed_templates import compiled_owner, compiled_template
+
 
 SCRIPT_SIZE = 59582
 OWNER_START = 208
@@ -35,22 +37,26 @@ def _base_program() -> bytes:
     return raw
 
 
-def locking_script_from_owner_hash(owner_hash160: bytes) -> bytes:
+def locking_script_from_owner_hash(owner_hash160: bytes, *, compiled_curve=False) -> bytes:
     if not isinstance(owner_hash160, bytes) or len(owner_hash160) != 20:
         raise ValueError("expected a 20-byte owner hash")
+    if compiled_curve:
+        return compiled_template().lock(owner_hash160)
     raw = _base_program()
     return raw[:OWNER_START] + owner_hash160 + raw[OWNER_END:]
 
 
-def locking_script_from_public_key(public_key: bytes) -> bytes:
+def locking_script_from_public_key(public_key: bytes, *, compiled_curve=False) -> bytes:
     """Generate the ordinary payment script using only the recipient's R1 key."""
-    return locking_script_from_owner_hash(public_key_hash160(public_key))
+    return locking_script_from_owner_hash(public_key_hash160(public_key), compiled_curve=compiled_curve)
 
 
 def recognize(raw: bytes) -> bytes | None:
-    """Return the owner hash after checking the prefix, length and all fixed bytes."""
-    if not isinstance(raw, bytes) or len(raw) != SCRIPT_SIZE:
+    """Return the owner hash after checking the length and all fixed bytes."""
+    if not isinstance(raw, bytes):
         return None
+    if len(raw) != SCRIPT_SIZE:
+        return compiled_owner(raw)
     match = _OWNER_PATTERN.fullmatch(raw)
     if match is None:
         return None

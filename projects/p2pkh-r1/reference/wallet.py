@@ -21,11 +21,12 @@ def _ensure_active(db, pubkey):
         raise SigningKeyBlocked("P-256 key blocked after a nonce-reuse warning")
 
 
-def sign_spend(tx, index, parent, requested_type, pubkey, sign_digest, history_path):
+def sign_spend(tx, index, parent, requested_type, pubkey, sign_digest, history_path, *, compress_otda=False):
     """Validate the parent and policy; call sign_digest(bytes32) -> raw r||s once.
 
     Use one persistent history per wallet across restarts and signing processes.
     The callback must keep its output private until this function returns.
+    Set compress_otda only when Chronicle functional unlocking is available.
     """
     if not 0 <= index < len(tx.tx_ins):
         raise ValueError("input index out of range")
@@ -69,7 +70,7 @@ def sign_spend(tx, index, parent, requested_type, pubkey, sign_digest, history_p
                 db.execute("INSERT INTO seen_r VALUES (?,?,?)", (pubkey, signature[:32], digest))
         if conflict:
             raise SigningKeyBlocked("same P-256 r observed on different digests; signature withheld")
-    return current_input_unlock(auth, pubkey, signature)
+    return current_input_unlock(auth, pubkey, signature, compress_otda_for=tx if compress_otda else None)
 
 
 def sign_payment(parent, vout, outputs, fee_sats, pubkey, sign_digest, history_path):

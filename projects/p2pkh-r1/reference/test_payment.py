@@ -14,14 +14,14 @@ from tx_engine import Script, Tx, TxIn, TxOut
 from assemble import assemble
 from p2pkh_r1 import locking_script_from_owner_hash, public_key_hash160, recognize
 from signature import UNIVERSAL_FLAGS, authorization, current_input_unlock
-from wallet import sign_payment
+from wallet import sign_payment, sign_spend
 
 TRUE = Script.parse_string("OP_1")
 
 
-def locking_script(owner):
+def locking_script(owner, *, compiled_curve=False):
     script = Script()
-    script.append_data(locking_script_from_owner_hash(owner))
+    script.append_data(locking_script_from_owner_hash(owner, compiled_curve=compiled_curve))
     return script
 
 
@@ -47,28 +47,54 @@ def fixture_signature(key, digest):
     return r.to_bytes(32, "big") + s.to_bytes(32, "big")
 
 
-def check(tx, parents, ix, valid=True):
+def check(tx, parents, ix, valid=True, *, chronicle=True, funding_height=3, extra_flags=0):
     out = parents[ix].tx_outs[tx.tx_ins[ix].prev_index]
     cookie = Path(os.environ["REGTEST_COOKIE"]).read_text().strip().split(":", 1)
-    flags = sum(1 << b for b in (1, 2, 3, 16, 18, 19, 20, 21))
+    flags = sum(1 << b for b in (1, 2, 3, 16, 18, 19)) | extra_flags
+    if chronicle:
+        flags |= 1 << 20
+        if funding_height >= 2:
+            flags |= 1 << 21
     request = dict(tx=tx.serialize().hex(), n=ix, flags=flags, reportflags=True,
-                   txo=dict(lock=out.script_pubkey.raw_serialize().hex(), value=out.amount, height=3))
-    r = requests.post("http://127.0.0.1:18443", auth=tuple(cookie), timeout=30,
+                   txo=dict(lock=out.script_pubkey.raw_serialize().hex(), value=out.amount, height=funding_height))
+    r = requests.post(os.environ.get("REGTEST_URL", "http://127.0.0.1:18443"),
+                      auth=tuple(cookie), timeout=30,
                       json=dict(jsonrpc="1.0", id=1, method="verifyscript", params=[[request], False, 5000]))
+    r.raise_for_status()
     data = r.json()
     if data.get("error"):
         raise AssertionError(data["error"])
     answer = data["result"][0]
     if answer["result"] != ("ok" if valid else "error"):
         raise AssertionError((valid, answer))
-    if answer["flags"] & flags != flags:
-        raise AssertionError(("missing verification flags", answer))
+    if answer["flags"] != flags:
+        raise AssertionError(("unexpected verification flags", answer))
 
 
 class CurrentInputTests(unittest.TestCase):
     def test_assembly(self):
         for owner in (bytes(range(20)), bytes([0x11]) * 20, signer(1)[2]):
             self.assertEqual(assemble(owner), locking_script_from_owner_hash(owner))
+
+    def test_compiled_curve_two_inputs_and_two_outputs(self):
+        owners = [signer(index) for index in range(1, 5)]
+        locks = [locking_script(owner, compiled_curve=True) for _, _, owner in owners]
+        funding = [parent(lock, 1000, tag) for lock, tag in zip(locks[:2], ("52", "53"), strict=True)]
+        outputs = [TxOut(900, lock) for lock in locks[2:]]
+        with TemporaryDirectory() as directory:
+            history = Path(directory) / "history.sqlite"
+            for flag in (0x41, 0x61):
+                with self.subTest(flag=hex(flag)):
+                    unsigned = Tx(2, [TxIn(previous.id(), 0, Script()) for previous in funding], outputs, 0)
+                    signed_inputs = []
+                    for index, (private, public, _) in enumerate(owners[:2]):
+                        witness = sign_spend(unsigned, index, funding[index], flag, public,
+                                            lambda digest: fixture_signature(private, digest), history)
+                        signed_inputs.append(TxIn(funding[index].id(), 0, witness))
+                    signed = Tx(2, signed_inputs, outputs, 0)
+                    signed.validate(funding)
+                    for index in range(2):
+                        check(signed, funding, index)
 
     def test_consecutive_payments(self):
         ka, qa, ha = signer(7)
