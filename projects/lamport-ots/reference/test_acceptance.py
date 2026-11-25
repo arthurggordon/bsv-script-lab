@@ -7,10 +7,12 @@ import unittest
 
 from engines import chain_valid
 from fixtures import cases, mode_fixture, test_secret
-from lamport import public_key, sign_digest, verify_digest
-from script import locking_script
+from lamport import OneTimeSigner, public_key, sign_digest, verify_digest
+from payment import sign_spend
+from script import committed_locking_script, locking_script
 from shared.evaluate import evaluate, ScriptError
-from shared.transaction import Output
+from shared.script import number, push
+from shared.transaction import Input, Output, Transaction
 from test_node import node_check
 
 
@@ -105,6 +107,24 @@ class LamportAcceptance(unittest.TestCase):
         self.assertEqual(len(visited), 1536)
 
     def test_universal_payment_decisions_cover_the_declared_domain(self):
+        self.check_payment_domain(locking_script)
+
+    def test_committed_payment_decisions_cover_the_declared_domain(self):
+        self.check_payment_domain(committed_locking_script)
+
+    @unittest.skipUnless(os.environ.get('REGTEST_COOKIE'), 'requires BSV Node regtest')
+    def test_committed_chronicle_activation_boundary(self):
+        shapes = [(mode, paired) for mode in MODES for paired in ((False, True) if mode in SINGLE else (True,))]
+        self.assertEqual(len(shapes), 16)
+        cases = product(VERSIONS, shapes, ((False, 1), (True, 1), (True, 3)))
+        for version, (mode, paired), (chronicle, height) in cases:
+            with self.subTest(version=version, mode=hex(mode), paired=paired, chronicle=chronicle, height=height):
+                _, parents, tx = mode_fixture(mode, paired=paired, version=version,
+                                              lock_factory=committed_locking_script)
+                self.assertEqual(node_check(tx, parents[1], 1, chronicle=chronicle, funding_height=height),
+                                 chronicle or not bool(mode & 0x20))
+
+    def check_payment_domain(self, lock_factory):
         expected = {
             (version, paired, mode, edit)
             for version, paired, mode, edit in product(VERSIONS, PAIRING, MODES, EDITS)
@@ -125,7 +145,8 @@ class LamportAcceptance(unittest.TestCase):
         self.assertEqual((len(expected), len(accepted)), (408, 168))
         visited = set()
         for version, paired, mode in product(VERSIONS, PAIRING, MODES):
-            _, parents, signed = mode_fixture(mode, paired=paired, version=version)
+            _, parents, signed = mode_fixture(mode, paired=paired, version=version,
+                                              lock_factory=lock_factory)
             for edit, candidate, prevouts in edited_payments(signed, parents):
                 row = (version, paired, mode, edit)
                 with self.subTest(row=row):
@@ -136,6 +157,51 @@ class LamportAcceptance(unittest.TestCase):
                     if os.environ.get('REGTEST_COOKIE'):
                         self.assertEqual(node_check(candidate, prevouts[1], 1), row in accepted, 'BSV Node')
         self.assertEqual(visited, expected)
+
+    def test_committed_proof_binds_every_selected_secret_and_sibling(self):
+        _, parents, signed = mode_fixture(0x41, lock_factory=committed_locking_script)
+        (preimage, proof, mode), _ = evaluate(signed.inputs[1].script)
+        self.assertEqual(len(proof), 16384)
+        self.assertEqual(mode, b'')
+
+        def check(candidate, valid):
+            tx = signed.with_script(1, push(preimage) + push(candidate) + number(0))
+            self.assertEqual(chain_valid(tx, parents), valid)
+            if os.environ.get('REGTEST_COOKIE'):
+                self.assertEqual(node_check(tx, parents[1], 1), valid)
+
+        check(proof, True)
+        for slot in range(512):
+            with self.subTest(slot=slot, selected_secret=slot % 2 == 0):
+                offset = 32 * slot
+                check(proof[:offset] + bytes([proof[offset] ^ 1]) + proof[offset+1:], False)
+        check(proof[:-1], False)
+        check(proof + b'\0', False)
+
+    def test_committed_2in_2out_and_fresh_key_preflight(self):
+        for mode in (0x41, 0x61):
+            with self.subTest(mode=hex(mode)):
+                signers = [OneTimeSigner(test_secret(bytes([mode, index]))) for index in range(2)]
+                keys = [signer.public_key for signer in signers]
+                funding = tuple(
+                    Transaction((Input(bytes([index + 1]) * 32, 0),),
+                                (Output(1000, committed_locking_script(key)),))
+                    for index, key in enumerate(keys)
+                )
+                fresh_locks = tuple(committed_locking_script(public_key(test_secret(bytes([mode, index]))))
+                                    for index in (2, 3))
+                tx = Transaction(tuple(Input(parent.txid_wire(), 0) for parent in funding),
+                                 tuple(Output(900, lock) for lock in fresh_locks))
+                for lock_factory in (locking_script, committed_locking_script):
+                    reused = replace(tx, outputs=(Output(900, lock_factory(keys[0])), tx.outputs[1]))
+                    with self.assertRaisesRegex(ValueError, 'fresh Lamport key'):
+                        sign_spend(reused, 0, funding[0].serialize(), keys[0], signers[0].sign, sighash=mode)
+                for index, (parent, signer) in enumerate(zip(funding, signers, strict=True)):
+                    tx = sign_spend(tx, index, parent.serialize(), signer.public_key, signer.sign, sighash=mode)
+                self.assertTrue(chain_valid(tx, funding))
+                if os.environ.get('REGTEST_COOKIE'):
+                    for index, parent in enumerate(funding):
+                        self.assertTrue(node_check(tx, parent, index))
 
     def test_legacy_cases_match_the_declared_inventory(self):
         visited = set()

@@ -1,8 +1,10 @@
 """Transaction authorization using an external Lamport signer callback."""
 from dataclasses import dataclass
 
-from script import COMPANION_CODE, ORDINARY_CODE, N, R, legacy_locking_script, locking_script
-from lamport import verify_digest
+from lamport import bits, verify_digest
+from script import (
+    COMPANION_CODE, ORDINARY_CODE, N, R, committed_locking_script, legacy_locking_script, locking_script,
+)
 from shared.script import number, push
 from shared.transaction import (
     CHRONICLE, FORKID, SIGHASH_ALL, SIGHASH_SINGLE, SIGHASH_TYPES,
@@ -45,10 +47,21 @@ def _checked_digest(auth):
     return digest
 
 
-def current_input_unlock(auth, public_key, signature):
-    if not verify_digest(public_key, _checked_digest(auth), signature):
+def current_input_unlock(auth, public_key, signature, *, committed=False):
+    if committed and auth.legacy:
+        raise ValueError('the legacy lock does not use committed proofs')
+    digest = _checked_digest(auth)
+    if not verify_digest(public_key, digest, signature):
         raise ValueError('invalid Lamport signature from external signer')
-    witness = push(auth.preimage) + push(signature)
+    proof = signature
+    if committed:
+        items = []
+        for index, choice in enumerate(bits(digest)):
+            selected = 32 * index
+            sibling = 64 * index + 32 * (1 - choice)
+            items.extend((signature[selected:selected+32], public_key[sibling:sibling+32]))
+        proof = b''.join(items)
+    witness = push(auth.preimage) + push(proof)
     if auth.legacy:
         return witness
     return witness + number(int(auth.companion))
@@ -75,14 +88,16 @@ def sign_spend(tx, index, funding_raw, public_key, signer, *, sighash=DEFAULT_SI
     previous = funding.outputs[current.vout]
     universal = locking_script(public_key)
     legacy = legacy_locking_script(public_key)
-    if previous.script not in (universal, legacy):
+    committed = committed_locking_script(public_key)
+    if previous.script not in (universal, legacy, committed):
         raise ValueError('funding output does not match public key and canonical template')
-    own_scripts = (universal, legacy, locking_script(public_key, transaction=False))
+    own_scripts = (universal, legacy, committed, locking_script(public_key, transaction=False))
     if any(output.script in own_scripts for output in tx.outputs):
         raise ValueError('change must use a fresh Lamport key')
     auth = authorization(tx, index, previous.value, sighash, legacy=previous.script == legacy)
     signature = signer(_checked_digest(auth))
-    return tx.with_script(index, current_input_unlock(auth, public_key, signature))
+    witness = current_input_unlock(auth, public_key, signature, committed=previous.script == committed)
+    return tx.with_script(index, witness)
 
 
 def sign_payment(funding_raw, vout, outputs, fee, public_key, signer, *, sighash=DEFAULT_SIGHASH):

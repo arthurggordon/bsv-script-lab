@@ -7,12 +7,12 @@ import platform
 from statistics import median
 from time import perf_counter_ns
 from lamport import generate_keypair, public_key, sign_digest, verify_digest
-from fixtures import fixture, mode_fixture
-from script import locking_script, binding
-from payment import authorization
+from fixtures import fixture, mode_fixture, test_secret
+from script import committed_locking_script, locking_script, binding
+from payment import authorization, sign_spend
 from engines import chain_valid, development_valid
 from shared.script import push
-from shared.transaction import SIGHASH_TYPES, hash256
+from shared.transaction import Input, Output, SIGHASH_TYPES, Transaction, hash256
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -103,6 +103,66 @@ def universal_sizes():
     }
 
 
+def _batch(lock_factory, flag, input_count, output_count):
+    # Each shape and lock format is a separate hypothetical payment with fresh test keys.
+    label = f'batch/{lock_factory.__name__}/{flag:02x}/{input_count}/{output_count}'.encode()
+    secrets = [test_secret(label + bytes([index])) for index in range(input_count + output_count)]
+    keys = [public_key(secret) for secret in secrets]
+    parents = tuple(
+        Transaction((Input(bytes([index + 1]) * 32, 0),),
+                    (Output(10_000, lock_factory(key)),))
+        for index, key in enumerate(keys[:input_count])
+    )
+    output_amount = (10_000 * input_count - 100) // output_count
+    tx = Transaction(tuple(Input(parent.txid_wire(), 0) for parent in parents),
+                     tuple(Output(output_amount, lock_factory(key)) for key in keys[input_count:]))
+    for index, parent in enumerate(parents):
+        secret = secrets[index]
+        tx = sign_spend(tx, index, parent.serialize(), keys[index],
+                        lambda digest: sign_digest(secret, digest), sighash=flag)
+    return tx, parents
+
+
+def committed_costs(iterations=30):
+    """Measure serialized payments and local chain-gang time with two Lamport formats."""
+    report = {}
+    sample_key = public_key(test_secret(b'lock-size'))
+    for lock_factory in (locking_script, committed_locking_script):
+        modes = {}
+        for flag in (0x41, 0x61):
+            sizes = {}
+            for input_count, output_count in ((1, 1), (2, 1), (2, 2), (3, 2), (2, 3)):
+                tx, parents = _batch(lock_factory, flag, input_count, output_count)
+                if not chain_valid(tx, parents):
+                    raise ValueError('chain-gang rejected the benchmark transaction')
+                sizes[f'{input_count}x{output_count}'] = len(tx.serialize())
+                if (input_count, output_count) == (2, 2):
+                    witness_bytes = len(tx.inputs[0].script)
+                    for _ in range(3):
+                        chain_valid(tx, parents)
+                    times = []
+                    for _ in range(iterations):
+                        start = perf_counter_ns()
+                        valid = chain_valid(tx, parents)
+                        times.append((perf_counter_ns() - start) / 1e6)
+                        if not valid:
+                            raise ValueError('chain-gang rejected the timed transaction')
+            modes[f'{flag:02x}'] = {
+                'payment_bytes': sizes,
+                'extra_input_bytes_at_2x2': sizes['3x2'] - sizes['2x2'],
+                'extra_output_bytes_at_2x2': sizes['2x3'] - sizes['2x2'],
+                'script_sig_bytes_at_2x2': witness_bytes,
+                'chain_gang_median_ms_at_2x2': round(median(times), 6),
+            }
+        report[lock_factory.__name__] = {'locking_bytes': len(lock_factory(sample_key)), **modes}
+    return {
+        'scope': 'Signed transaction bytes; local chain-gang time includes the Python adapter',
+        'platform': platform.platform(),
+        'iterations': iterations,
+        'formats': report,
+    }
+
+
 def stack_profile():
     # Observe the development interpreter's actual stack for the public vector.
     # This is payload accounting, not the node's allocator/resource accounting.
@@ -161,8 +221,13 @@ if __name__ == '__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument('--write-vector',action='store_true')
     parser.add_argument('--benchmark',action='store_true')
+    parser.add_argument('--committed-costs', action='store_true')
     args=parser.parse_args()
     if args.write_vector:
         (ROOT/'template/vector.json').write_text(json.dumps(vector(),indent=2)+'\n')
         (ROOT/'template/universal-vectors.json').write_text(json.dumps(universal_vector(),indent=2)+'\n')
-    print(json.dumps(benchmark() if args.benchmark else universal_sizes(),indent=2))
+    if args.committed_costs:
+        report = committed_costs()
+    else:
+        report = benchmark() if args.benchmark else universal_sizes()
+    print(json.dumps(report, indent=2))

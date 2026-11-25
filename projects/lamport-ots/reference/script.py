@@ -1,9 +1,10 @@
 """Unrolled Lamport verifier and fixed-r PUSHTX transaction binding."""
+from hashlib import sha256
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from shared.script import asm, push, number
-from lamport import KEY_BYTES, require_bytes
+from lamport import KEY_BYTES, SIGNATURE_BYTES, require_bytes
 from shared.transaction import SIGHASH_TYPES
 
 N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141
@@ -41,6 +42,27 @@ def verifier(key):
             code += asm('OP_SPLIT OP_SWAP OP_SHA256 OP_FROMALTSTACK OP_EQUALVERIFY OP_SWAP')
         code += asm('OP_DROP OP_FROMALTSTACK')
     return bytes(code) + asm('OP_0 OP_EQUALVERIFY OP_0 OP_EQUALVERIFY')
+
+
+def _committed_verifier(key):
+    """Rebuild the ordered public-key pairs and check their SHA-256 commitment."""
+    require_bytes(key, KEY_BYTES, 'public key')
+    code = bytearray(asm('OP_0 OP_TOALTSTACK'))
+    for _ in range(32):
+        # Altstack holds the accumulated public key and the remaining digest.
+        code += asm('OP_1 OP_SPLIT OP_SWAP') + push(b'\0') + asm('OP_CAT OP_BIN2NUM')
+        code += asm('OP_SWAP OP_TOALTSTACK OP_0 OP_ROT')
+        for _ in range(8):
+            # Main stack: digest digit, current chunk, remaining interleaved proof.
+            code += number(32) + asm('OP_SPLIT OP_SWAP OP_SHA256 OP_SWAP')
+            code += number(32) + asm('OP_SPLIT OP_TOALTSTACK')
+            # Bit 0 puts the selected hash first. Bit 1 puts its sibling first.
+            code += asm('OP_3 OP_PICK OP_2 OP_MOD OP_IF OP_SWAP OP_ENDIF OP_CAT OP_CAT')
+            code += asm('OP_SWAP OP_2 OP_DIV OP_SWAP OP_FROMALTSTACK')
+        code += asm('OP_ROT OP_0 OP_EQUALVERIFY OP_FROMALTSTACK OP_FROMALTSTACK')
+        code += asm('OP_3 OP_ROLL OP_CAT OP_TOALTSTACK')
+    code += asm('OP_0 OP_EQUALVERIFY OP_0 OP_EQUALVERIFY OP_FROMALTSTACK OP_SHA256')
+    return bytes(code) + push(sha256(key).digest()) + asm('OP_EQUALVERIFY')
 
 
 def _v1_script(key, *, transaction=True):
@@ -112,6 +134,15 @@ def locking_script(key, *, transaction=True):
     """Universal lock witness: preimage, packed signature, companion selector."""
     if not transaction:
         return _v1_script(key, transaction=False)
+    return _payment_lock(SIGNATURE_BYTES, verifier(key))
+
+
+def committed_locking_script(key):
+    """Build the shorter payment lock with a commitment to the Lamport key."""
+    return _payment_lock(KEY_BYTES, _committed_verifier(key))
+
+
+def _payment_lock(proof_bytes, verifier_code):
     code = _check_authorization()
-    code += asm('OP_SIZE') + number(8192) + asm('OP_NUMEQUALVERIFY OP_SWAP OP_HASH256 OP_DUP OP_TOALTSTACK')
-    return code + verifier(key) + asm('OP_FROMALTSTACK') + _universal_binding()
+    code += asm('OP_SIZE') + number(proof_bytes) + asm('OP_NUMEQUALVERIFY OP_SWAP OP_HASH256 OP_DUP OP_TOALTSTACK')
+    return code + verifier_code + asm('OP_FROMALTSTACK') + _universal_binding()

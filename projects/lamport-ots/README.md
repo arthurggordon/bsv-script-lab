@@ -60,3 +60,45 @@ bash projects/lamport-ots/reference/verify.sh
 [Acceptance domain and coverage proof](docs/acceptance.md) · [Validation receipt](docs/validation.md) · [Protocol and layout](docs/spec.md) · [Reference usage](reference/README.md) ·
 [Original ALL vector](template/vector.json) ·
 [Universal sighash vectors](template/universal-vectors.json)
+
+## Committed-key candidate
+
+`committed_locking_script(key)` opts in to the experimental 7,746-byte lock.
+It stores SHA-256 of the existing ordered 16,384-byte Lamport public key.
+For each digest bit, the witness supplies its usual 32-byte secret and the
+32-byte public hash for the opposite bit. The script hashes the secret,
+orders each pair by the preimage digest, reconstructs the public key, and
+checks its commitment. The two proof halves use the same key and bit order
+as the existing Lamport signer. The wallet still requests one 8,192-byte
+signature from the external signer. It needs the full public key off chain
+to construct the proof. Keep that key or the data required to derive it
+available to the wallet. Use fresh keys across formats and persist key
+consumption before disclosing a signature.
+
+The candidate saves 15,034 bytes per lock and adds 8,192 bytes to an ordinary
+ForkID witness. These complete, signed transactions use fresh, synthetic
+Lamport keys for every input and output. Marginal costs are measured from the
+2-input, 2-output payment.
+
+| Mode and format | 2 inputs, 2 outputs | Extra input | Extra output |
+| --- | ---: | ---: | ---: |
+| ForkID ALL, full key | 62,392 B | 8,400 B | 22,791 B |
+| ForkID ALL, commitment | 48,708 B | 16,592 B | 7,757 B |
+| Chronicle OTDA ALL, full key | 153,436 B | 54,045 B | 68,381 B |
+| Chronicle OTDA ALL, commitment | 79,616 B | 32,169 B | 23,271 B |
+
+The ForkID format favors the committed lock when the number of Lamport
+outputs divided by the number of Lamport inputs exceeds `8192/15034`. This
+uses the same transaction framing and CompactSize widths. OTDA ALL repeats
+the serialized outputs in each signing preimage, so the shorter output
+reduces each input witness as well.
+
+```sh
+python projects/lamport-ots/reference/measure.py --committed-costs
+bash projects/lamport-ots/reference/verify.sh
+```
+
+The acceptance suite runs the 408-row payment decision matrix for both
+formats. It also flips one bit in each of the 512 proof positions of one
+committed spend, tests short and long proofs, and checks the Chronicle
+activation boundary in BSV Node.
